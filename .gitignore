@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Sensitive Configuration - CRITICAL
+.env
+
+# Database File
+ticket_bot_settings.db
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+
+# IDE / Editor specific files
+.vscode/
+.idea/
+*.project
+*.sublime-project
+*.sublime-workspace
+
+*.log
+logs/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+build/
+dist/
+*.egg-info/
+*.egg
+
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
