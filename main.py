@@ -38,7 +38,8 @@ bot = commands.Bot(intents=intents)
 # --- Cog Loading ---
 INITIAL_EXTENSIONS = [
     'cogs.config_cog',
-    'cogs.ticket_manager_cog'
+    'cogs.ticket_manager_cog',
+    'cogs.auto_responder_cog' 
 ]
 
 @bot.event
