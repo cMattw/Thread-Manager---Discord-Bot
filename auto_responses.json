@@ -4,5 +4,11 @@
     "response": "All systems online and operational, {user_mention}!",
     "case_sensitive": false,
     "match_type": "exact"
+  },
+   {
+    "triggers": ["~cogs"],
+    "response": "{loaded_cogs_list}",
+    "case_sensitive": false,
+    "match_type": "exact"
   }
 ]
