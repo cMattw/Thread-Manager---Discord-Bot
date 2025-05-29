@@ -397,23 +397,55 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
         await self._load_config_and_cache() 
         await interaction.followup.send(f"Invite log channel set to {channel.mention}.", ephemeral=True)
 
-    @inviteset_group.subcommand(name="leaderboard_webhook", description="Sets webhook URL for invite leaderboard.")
+    @inviteset_group.subcommand(name="leaderboard_webhook", description="Sets the webhook URL for the invite leaderboard.")
     async def set_leaderboard_webhook(self, interaction: Interaction, webhook_url: str = SlashOption(description="The full Discord webhook URL", required=True)):
         await interaction.response.defer(ephemeral=True)
-        if not webhook_url.startswith("https://discord.com/api/webhooks/"): await interaction.followup.send("Invalid webhook URL format.", ephemeral=True); return
+
+        if not webhook_url.startswith("https://discord.com/api/webhooks/"):
+            await interaction.followup.send("Invalid webhook URL format. It should start with `https://discord.com/api/webhooks/`.", ephemeral=True)
+            return
+        
         try:
+            # Create an initial placeholder embed
+            initial_embed = Embed(
+                title="Invitation Leaderboard", # You mentioned removing trophy emojis here too
+                description="Initializing... the first update will appear shortly.",
+                color=Color.blurple() # Or any color you prefer for initialization
+            )
+            initial_embed.timestamp = datetime.now(timezone.utc)
+            initial_embed.set_footer(text="Awaiting first update cycle.")
+
             async with aiohttp.ClientSession() as session:
                 temp_webhook = Webhook.from_url(webhook_url, session=session)
-                # Send initial message WITHOUT bot's username/avatar
-                test_message = await temp_webhook.send("Invitation Leaderboard\nInitializing... the first update will appear shortly.", wait=True) 
+                # Send the initial message with ONLY the embed
+                # The webhook will use its own default name and avatar
+                initial_message = await temp_webhook.send(embed=initial_embed, wait=True) 
+            
+            # Store the webhook URL and the ID of the message it just sent
             idb.update_cog_config(interaction.guild.id, 'leaderboard_webhook_url', webhook_url)
-            idb.update_cog_config(interaction.guild.id, 'leaderboard_message_id', test_message.id)
-            idb.update_cog_config(interaction.guild.id, 'leaderboard_channel_id', test_message.channel.id)
-            await self._load_config_and_cache() 
-            await interaction.followup.send(f"Leaderboard webhook set & initialized in <#{test_message.channel.id}>.", ephemeral=True)
-            if self.update_leaderboard_task.is_running(): self.update_leaderboard_task.restart()
-            else: self.update_leaderboard_task.start()
-        except Exception as e: await interaction.followup.send(f"Error with webhook: {e}", ephemeral=True); logging.error("Webhook setup error", exc_info=True)
+            idb.update_cog_config(interaction.guild.id, 'leaderboard_message_id', initial_message.id)
+            idb.update_cog_config(interaction.guild.id, 'leaderboard_channel_id', initial_message.channel.id) # Store channel for reference
+            
+            # Reload the cog's internal config to pick up these new settings
+            await self._load_config_and_cache() # Or self._load_config() if that's your method name
+            
+            await interaction.followup.send(f"Leaderboard webhook set. An initial message has been posted to <#{initial_message.channel.id}> which will be updated with the leaderboard.", ephemeral=True)
+            
+            # Restart or start the task to make it update immediately with actual data if possible
+            if self.update_leaderboard_task.is_running(): 
+                self.update_leaderboard_task.restart()
+            elif self.leaderboard_webhook_url: # Ensure URL is set before starting
+                self.update_leaderboard_task.start()
+
+        except ValueError as e: # Handles issues with Webhook.from_url if URL is malformed beyond basic check
+            await interaction.followup.send(f"Invalid webhook URL or issue creating webhook object: {e}", ephemeral=True)
+            logging.error(f"Webhook setup error (ValueError): {e}", exc_info=True)
+        except nextcord.HTTPException as e: # Handles errors during webhook.send (e.g., invalid webhook, perms)
+            await interaction.followup.send(f"Error sending initial message via webhook (e.g., invalid webhook URL, or webhook deleted/no perms): {e.status} {e.text}", ephemeral=True)
+            logging.error(f"Webhook setup error (HTTPException): {e}", exc_info=True)
+        except Exception as e: 
+            await interaction.followup.send(f"An unexpected error occurred with the webhook: {type(e).__name__} - {e}", ephemeral=True)
+            logging.error("Unexpected webhook setup error in set_leaderboard_webhook", exc_info=True)
 
     @inviteset_group.subcommand(name="set_required_role", description="Role an invited member needs for the invite to be 'valid'.")
     async def set_required_role_for_valid_invite(self, interaction: Interaction, role: Optional[Role] = SlashOption(description="The role required. Select None/empty to clear.", required=False)):
