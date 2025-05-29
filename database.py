@@ -3,7 +3,7 @@ import logging
 from typing import Optional, List, Tuple, Dict, Any, Set
 from datetime import datetime, timezone
 
-DATABASE_NAME = 'ticket_bot_settings.db'
+DATABASE_NAME = '/home/container/data/ticket_bot_settings.db'
 
 def get_db_connection():
     conn = sqlite3.connect(DATABASE_NAME)
