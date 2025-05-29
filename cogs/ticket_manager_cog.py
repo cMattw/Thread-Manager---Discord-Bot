@@ -253,12 +253,11 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
 
     @check_archived_threads_task.before_loop
     async def before_check_archived_threads_task(self):
-        logging.info("Waiting for bot to be ready before starting thread check task...")
+        logging.info("TicketManagerCog: Waiting for bot to be fully ready before starting check_archived_threads_task loop...")
         await self.bot.wait_until_ready()
-        if not hasattr(self.bot, 'target_guild_id') or not self.bot.target_guild_id:
-            logging.error("Target guild ID not available in before_loop for TicketManager. Task may not run or will stop.")
-        database.initialize_database() 
-        logging.info("TicketManagerCog task ready.")
+        # The task's main loop will perform the critical check for self.bot.target_guild_id.
+        # database.initialize_database() is already called in main.py's on_ready.
+        logging.info("TicketManagerCog: Bot is ready. Task loop for check_archived_threads_task will now begin its iterations.")
 
     async def cog_check(self, interaction: Interaction) -> bool:
         if not self.bot.target_guild_id:
