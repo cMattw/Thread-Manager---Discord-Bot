@@ -4,7 +4,7 @@ from nextcord import (
     Interaction, SlashOption, TextChannel, Attachment, 
     Embed, Color, Webhook
 )
-import database
+from db_utils import database
 import logging
 from datetime import datetime, timezone, timedelta
 import json 

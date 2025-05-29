@@ -1,7 +1,7 @@
 import nextcord
 from nextcord.ext import commands, application_checks
 from nextcord import Interaction, SlashOption, Thread 
-import database 
+from db_utils import database
 import logging
 import re 
 from typing import Optional 

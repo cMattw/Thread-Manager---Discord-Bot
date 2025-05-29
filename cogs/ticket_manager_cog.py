@@ -1,7 +1,7 @@
 import nextcord
 from nextcord.ext import commands, tasks, application_checks
 from nextcord import Interaction, SlashOption, Thread, TextChannel, ForumChannel, Color 
-import database 
+from db_utils import database
 import logging
 from datetime import datetime, timedelta, timezone
 import pytz
