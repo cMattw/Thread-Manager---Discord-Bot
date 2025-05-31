@@ -1,3 +1,4 @@
+# role_monitor_cog.py
 import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction, SlashOption, Permissions, Member, Role, Embed, Color, Webhook, WebhookMessage
@@ -203,23 +204,26 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                 custom_content_template = watched_role_data.get('gain_custom_content')
                 text_content = self._resolve_placeholders(custom_content_template or default_content_placeholder, after, role)
                 
-                db_gain_title = watched_role_data.get('gain_custom_title')
-                title_for_embed_gain: Optional[str]
-                if db_gain_title == "":
-                    title_for_embed_gain = None 
-                elif db_gain_title is not None:
-                    title_for_embed_gain = self._resolve_placeholders(db_gain_title, after, role)
-                else:
-                    title_for_embed_gain = "Role Acquired"
+                # --- Title handling for GAIN event ---
+                db_custom_title = watched_role_data.get('gain_custom_title')
+                title_for_embed: Optional[str]
+                if db_custom_title is not None: # If there's any custom setting (even empty string)
+                    if db_custom_title.strip() == "": # Explicitly set to empty or spaces-only means no title
+                        title_for_embed = None
+                    else: # A non-empty custom title
+                        title_for_embed = self._resolve_placeholders(db_custom_title, after, role)
+                else:  # No custom title set (NULL in DB), use default
+                    title_for_embed = "Role Acquired"
+                # --- End Title handling ---
                 
                 description_template_gain = watched_role_data.get('gain_custom_description') or "{user.mention} has acquired the {role.name}"
-                embed_title = title_for_embed_gain
+                embed_title = title_for_embed 
                 embed_description = self._resolve_placeholders(description_template_gain, after, role)
 
                 embed = Embed(title=embed_title, description=embed_description, color=role.color if role.color != Color.default() else Color.blue(), timestamp=datetime.now(timezone.utc))
                 embed.set_thumbnail(url=after.display_avatar.url)
-                embed.set_image(url=STATIC_EMBED_IMAGE_URL) # Added static image
-                embed.set_footer(text="Role Monitor") # Updated footer text
+                embed.set_image(url=STATIC_EMBED_IMAGE_URL)
+                embed.set_footer(text="Role Monitor")
                 
                 logger.info(f"  Sending new '{event_type}' message for {after.name}, role {role.name}.")
                 sent_message = await self._send_webhook_message(webhook_url, content=text_content, embed=embed)
@@ -274,23 +278,26 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                 custom_content_template = watched_role_data.get('loss_custom_content')
                 text_content = self._resolve_placeholders(custom_content_template or default_content_placeholder, after, role)
 
-                db_loss_title = watched_role_data.get('loss_custom_title')
-                title_for_embed_loss: Optional[str]
-                if db_loss_title == "": 
-                    title_for_embed_loss = None
-                elif db_loss_title is not None:
-                    title_for_embed_loss = self._resolve_placeholders(db_loss_title, after, role)
-                else:
-                    title_for_embed_loss = "Role Lost"
+                # --- Title handling for LOSS event ---
+                db_custom_title = watched_role_data.get('loss_custom_title')
+                title_for_embed: Optional[str]
+                if db_custom_title is not None: # If there's any custom setting
+                    if db_custom_title.strip() == "": # Explicitly empty or spaces-only means no title
+                        title_for_embed = None
+                    else: # A non-empty custom title
+                        title_for_embed = self._resolve_placeholders(db_custom_title, after, role)
+                else:  # No custom title set (NULL in DB), use default
+                    title_for_embed = "Role Lost"
+                # --- End Title handling ---
 
                 description_template_loss = watched_role_data.get('loss_custom_description') or "{user.mention} no longer has the {role.name}"
-                embed_title = title_for_embed_loss
+                embed_title = title_for_embed
                 embed_description = self._resolve_placeholders(description_template_loss, after, role)
 
                 embed = Embed(title=embed_title, description=embed_description, color=role.color if role.color != Color.default() else Color.greyple(), timestamp=datetime.now(timezone.utc))
                 embed.set_thumbnail(url=after.display_avatar.url)
-                embed.set_image(url=STATIC_EMBED_IMAGE_URL) # Added static image
-                embed.set_footer(text="Role Monitor") # Updated footer text
+                embed.set_image(url=STATIC_EMBED_IMAGE_URL)
+                embed.set_footer(text="Role Monitor")
 
                 logger.info(f"  Sending new '{event_type}' message for {after.name}, role {role.name}.")
                 sent_message = await self._send_webhook_message(webhook_url, content=text_content, embed=embed)
@@ -384,8 +391,7 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
             c_text = " (Custom Tmpl)" if has_cust else ""
             desc_lines.append(f"**{r_name}**: {status}{c_text}")
         embed.description = "\n".join(desc_lines) if desc_lines else "No roles."
-        embed.set_footer(text="Role Monitor") # Updated footer
-        # Timestamp is handled by the Embed object itself
+        embed.set_footer(text="Role Monitor")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @rolewatch.subcommand(name="set_template", description="Sets custom templates.")
