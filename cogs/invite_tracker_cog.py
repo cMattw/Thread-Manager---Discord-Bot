@@ -309,7 +309,7 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
                 if vanity_invite_obj:
                     await self._log_invite_action(
                         title="Member Joined (Vanity Invite)", color=Color.blue(),
-                        Joined_Member=member, Invite_Details=f"Used server vanity: `{vanity_invite_obj.code}` (URL: {vanity_invite_obj.url})"
+                        Joined_Member=member, Details=f"Joined using the server vanity invite"
                     )
                     vanity_invite_used_and_logged = True
             except nextcord.Forbidden:
