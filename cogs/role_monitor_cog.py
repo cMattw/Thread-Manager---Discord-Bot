@@ -137,7 +137,8 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
     @commands.Cog.listener()
     async def on_member_update(self, before: Member, after: Member):
         if before.guild.id != after.guild.id: return
-        if before.roles == after.roles: return
+        if before.roles == after.roles: 
+            return
 
         guild_id = str(after.guild.id)
         
@@ -151,6 +152,7 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
 
         webhook_url = db.get_webhook_url(guild_id)
         if not webhook_url:
+            # This is a normal operational skip if webhook is not set
             return
 
         before_role_ids = {role.id for role in before.roles}
@@ -180,41 +182,45 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                 
                 active_msg = db.get_active_message(guild_id, str(after.id), str(role.id))
                 if active_msg:
-                    db_message_state_raw = active_msg.get('message_state')
+                    db_message_state_raw = active_msg.get('message_state') 
                     db_webhook_id = active_msg.get('webhook_message_id')
+                    # Use repr() for accurate logging of the raw state from DB
                     logger.info(f"  GAINED Event - Previous DB state for user {after.id}, role {role.id}: {repr(db_message_state_raw)}, msg_id: '{db_webhook_id}'.")
 
                     processed_db_state_for_lost_check = None
                     if isinstance(db_message_state_raw, str):
                         processed_db_state_for_lost_check = db_message_state_raw.strip().lower()
                     
-                    target_state_lost = 'lost'
+                    target_state_lost = 'loss' 
+                    
                     is_prev_state_lost = (processed_db_state_for_lost_check == target_state_lost)
                     has_message_id = bool(db_webhook_id) 
                     
+                    # Simplified logging for the condition check, focusing on the outcome
+                    logger.info(f"    GAINED Event - Check: prev_state_is_lost={is_prev_state_lost} (processed_db_state='{processed_db_state_for_lost_check}', target='{target_state_lost}'); has_msg_id={has_message_id}.")
+
                     if is_prev_state_lost and has_message_id:
                         logger.info(f"    Attempting to delete previous 'lost' message (ID: {db_webhook_id}).")
                         deleted = await self._delete_webhook_message(webhook_url, db_webhook_id)
                         if deleted: logger.info(f"      Successfully deleted previous 'lost' message.")
                         else: logger.warning(f"      FAILED to delete previous 'lost' message.")
-                    elif active_msg:
+                    elif active_msg: # Log only if there was a record but no deletion occurred
                         logger.info(f"    No deletion needed for GAIN event (prev_state_is_lost: {is_prev_state_lost}, has_msg_id: {has_message_id}).")
-                
+                else: # No active_msg found in DB
+                     logger.info(f"  GAINED Event - No previous DB record for user {after.id}, role {role.id}.")
+
                 custom_content_template = watched_role_data.get('gain_custom_content')
                 text_content = self._resolve_placeholders(custom_content_template or default_content_placeholder, after, role)
                 
-                # --- Title handling for GAIN event ---
                 db_custom_title = watched_role_data.get('gain_custom_title')
                 title_for_embed: Optional[str]
                 if db_custom_title is not None: 
-                    # Check if user wants no title by providing "NONE" (case-insensitive) or an empty/whitespace string
                     if db_custom_title.strip().upper() == "NONE" or db_custom_title.strip() == "":
                         title_for_embed = None
                     else: 
                         title_for_embed = self._resolve_placeholders(db_custom_title, after, role)
-                else:  # No custom setting (NULL in DB from clear_template), use default
+                else:
                     title_for_embed = "Role Acquired"
-                # --- End Title handling ---
                 
                 description_template_gain = watched_role_data.get('gain_custom_description') or "{user.mention} has acquired the {role.name}"
                 embed_title = title_for_embed 
@@ -267,6 +273,8 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                     is_prev_state_gain = (processed_db_state_for_gain_check == target_state_gain)
                     has_message_id = bool(db_webhook_id)
                     
+                    logger.info(f"    LOST Event - Check: prev_state_is_gain={is_prev_state_gain} (processed_db_state='{processed_db_state_for_gain_check}', target='{target_state_gain}'); has_msg_id={has_message_id}.")
+
                     if is_prev_state_gain and has_message_id:
                         logger.info(f"    Attempting to delete previous 'gain' message (ID: {db_webhook_id}).")
                         deleted = await self._delete_webhook_message(webhook_url, db_webhook_id)
@@ -274,11 +282,12 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                         else: logger.warning(f"      FAILED to delete previous 'gain' message.")
                     elif active_msg:
                         logger.info(f"    No deletion needed for LOST event (prev_state_is_gain: {is_prev_state_gain}, has_msg_id: {has_message_id}).")
+                else:
+                    logger.info(f"  LOST Event - No previous DB record for user {after.id}, role {role.id}.")
                 
                 custom_content_template = watched_role_data.get('loss_custom_content')
                 text_content = self._resolve_placeholders(custom_content_template or default_content_placeholder, after, role)
 
-                # --- Title handling for LOSS event ---
                 db_custom_title = watched_role_data.get('loss_custom_title')
                 title_for_embed: Optional[str]
                 if db_custom_title is not None: 
@@ -286,9 +295,8 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                         title_for_embed = None
                     else: 
                         title_for_embed = self._resolve_placeholders(db_custom_title, after, role)
-                else:  # No custom title set (NULL in DB), use default
+                else:
                     title_for_embed = "Role Lost"
-                # --- End Title handling ---
 
                 description_template_loss = watched_role_data.get('loss_custom_description') or "{user.mention} no longer has the {role.name}"
                 embed_title = title_for_embed
