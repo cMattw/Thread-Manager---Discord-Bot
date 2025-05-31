@@ -1,4 +1,3 @@
-# role_monitor_cog.py
 import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction, SlashOption, Permissions, Member, Role, Embed, Color, Webhook, WebhookMessage
@@ -8,7 +7,7 @@ import aiohttp
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Union
 
-# Import the database module
+# Import the database modules
 from db_utils import role_monitor_database as db
 
 # Configure logging
@@ -207,12 +206,13 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                 # --- Title handling for GAIN event ---
                 db_custom_title = watched_role_data.get('gain_custom_title')
                 title_for_embed: Optional[str]
-                if db_custom_title is not None: # If there's any custom setting (even empty string)
-                    if db_custom_title.strip() == "": # Explicitly set to empty or spaces-only means no title
+                if db_custom_title is not None: 
+                    # Check if user wants no title by providing "NONE" (case-insensitive) or an empty/whitespace string
+                    if db_custom_title.strip().upper() == "NONE" or db_custom_title.strip() == "":
                         title_for_embed = None
-                    else: # A non-empty custom title
+                    else: 
                         title_for_embed = self._resolve_placeholders(db_custom_title, after, role)
-                else:  # No custom title set (NULL in DB), use default
+                else:  # No custom setting (NULL in DB from clear_template), use default
                     title_for_embed = "Role Acquired"
                 # --- End Title handling ---
                 
@@ -281,10 +281,10 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
                 # --- Title handling for LOSS event ---
                 db_custom_title = watched_role_data.get('loss_custom_title')
                 title_for_embed: Optional[str]
-                if db_custom_title is not None: # If there's any custom setting
-                    if db_custom_title.strip() == "": # Explicitly empty or spaces-only means no title
+                if db_custom_title is not None: 
+                    if db_custom_title.strip().upper() == "NONE" or db_custom_title.strip() == "":
                         title_for_embed = None
-                    else: # A non-empty custom title
+                    else: 
                         title_for_embed = self._resolve_placeholders(db_custom_title, after, role)
                 else:  # No custom title set (NULL in DB), use default
                     title_for_embed = "Role Lost"
@@ -395,7 +395,12 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @rolewatch.subcommand(name="set_template", description="Sets custom templates.")
-    async def set_template_sub(self, interaction: Interaction, role: Role = SlashOption(description="Role", required=True), event_type: str = SlashOption(description="Event type", choices={"gain": "gain", "loss": "loss"}, required=True), title: Optional[str] = SlashOption(description="Embed title (empty string for no title)", required=False), description: Optional[str] = SlashOption(description="Embed description", required=False), content: Optional[str] = SlashOption(description="Text content", required=False)):
+    async def set_template_sub(self, interaction: Interaction, 
+                           role: Role = SlashOption(description="Role", required=True), 
+                           event_type: str = SlashOption(description="Event type", choices={"gain": "gain", "loss": "loss"}, required=True), 
+                           title: Optional[str] = SlashOption(description="Embed title (type 'NONE' or empty for no title)", required=False), 
+                           description: Optional[str] = SlashOption(description="Embed description", required=False), 
+                           content: Optional[str] = SlashOption(description="Text content", required=False)):
         guild_id = str(interaction.guild.id)
         role_id_str = str(role.id)
         if not db.get_watched_role(guild_id, role_id_str):
@@ -406,6 +411,9 @@ class RoleMonitorCog(commands.Cog, name="Role Watcher"):
             await interaction.response.send_message(f"ℹ️ No template parts provided to set/change.", ephemeral=True)
             return
 
+        # If title is provided as empty by user, it's stored as ""
+        # If title is "NONE", it's stored as "NONE"
+        # If title is not provided (None), it's not passed to db.update_role_template's title argument
         db.update_role_template(guild_id, role_id_str, event_type, title, description, content)
         await interaction.response.send_message(f"✅ Templates for **{role.name}** ({event_type}) updated.", ephemeral=True)
         logger.info(f"Templates for {role.name} ({event_type}) updated for {guild_id} by {interaction.user}.")
