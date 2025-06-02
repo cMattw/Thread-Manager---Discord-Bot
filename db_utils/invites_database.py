@@ -4,9 +4,15 @@ from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timezone
 import os
 
-DB_DIRECTORY = "/home/container/data"
-# DB_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data" # Make sure this path is correct for your environment
+DB_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/"
+PROD_DB_PATH = "/home/container/data/"
+
 INVITES_DATABASE_NAME = os.path.join(DB_DIRECTORY, "invites_cog.db")
+
+# Determine which DB path to use
+DB_DIRECTORY = PROD_DB_PATH if os.path.exists("/home/container/") else DB_DIRECTORY
+# Ensure the directory exists
+os.makedirs(os.path.dirname(DB_DIRECTORY), exist_ok=True)
 
 def get_invites_db_connection():
     try:

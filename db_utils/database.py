@@ -4,22 +4,14 @@ from typing import Optional, List, Tuple, Dict, Any, Set
 from datetime import datetime, timezone 
 import os 
 
-# --- Main Bot Database (ticket_bot_settings.db) ---
-# For local testing, ensure this path is correct and writable.
-# For server, this path should point to persistent storage.
-# DB_MAIN_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data" # Example for local, adjust for server
-DB_MAIN_DIRECTORY = "/home/container/data" # Example for WitherHosting
+DB_MAIN_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/"
+PROD_DB_PATH = "/home/container/data/"
 
 DATABASE_MAIN_NAME = os.path.join(DB_MAIN_DIRECTORY, "ticket_bot_settings.db")
 
-# Ensure main DB directory exists
-try:
-    if DB_MAIN_DIRECTORY and not os.path.exists(DB_MAIN_DIRECTORY):
-         os.makedirs(DB_MAIN_DIRECTORY, exist_ok=True)
-         logging.info(f"Created main database directory: {DB_MAIN_DIRECTORY}")
-except OSError as e:
-    logging.error(f"Could not create main database directory {DB_MAIN_DIRECTORY}: {e}")
-
+DB_MAIN_DIRECTORY = PROD_DB_PATH if os.path.exists("/home/container/") else DB_MAIN_DIRECTORY
+# Ensure the directory exists
+os.makedirs(os.path.dirname(DB_MAIN_DIRECTORY), exist_ok=True)
 
 def get_db_connection(): # Connects to the main database
     conn = sqlite3.connect(DATABASE_MAIN_NAME)

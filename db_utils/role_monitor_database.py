@@ -2,17 +2,13 @@ import sqlite3
 import os
 from typing import Optional, Dict, Any, List, Tuple, Union
 
-DB_PATH = "/home/container/data/role_monitor.db"
-# DB_PATH = "/home/mattw/Projects/discord_ticket_manager/data/role_monitor.db"
+DB_PATH = "/home/mattw/Projects/discord_ticket_manager/data/role_monitor.db"
+PROD_DB_PATH = "/home/container/data/role_monitor.db"
 
-# Ensure the directory for the database file exists
-DB_DIR = os.path.dirname(DB_PATH)
-if DB_DIR and not os.path.exists(DB_DIR):
-    os.makedirs(DB_DIR, exist_ok=True)
-elif not DB_DIR and not os.path.exists(DB_PATH) and DB_PATH == "role_monitor.db":
-    # If DB_PATH is just a filename, it will be created in the current working directory.
-    # No specific directory creation needed unless a path is specified.
-    pass
+# Determine which DB path to use
+DB_PATH = PROD_DB_PATH if os.path.exists("/home/container/") else DB_PATH
+# Ensure the directory exists
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 
 def get_connection() -> sqlite3.Connection:

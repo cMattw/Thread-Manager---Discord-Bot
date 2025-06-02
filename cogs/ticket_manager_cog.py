@@ -70,16 +70,23 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
     async def _get_channels_to_scan(self, guild: nextcord.Guild) -> List[Union[TextChannel, ForumChannel]]:
         monitored_channel_ids = database.get_monitored_channels(guild.id)
         channels_to_scan: List[Union[TextChannel, ForumChannel]] = []
-        if monitored_channel_ids:
-            for chan_id in monitored_channel_ids:
-                channel = guild.get_channel(chan_id)
-                if channel and isinstance(channel, (TextChannel, ForumChannel)):
-                    channels_to_scan.append(channel)
-                else:
-                    logging.warning(f"Monitored channel ID {chan_id} not found or not a Text/Forum channel in guild {guild.name}.")
-        else: 
-            for tc in guild.text_channels: channels_to_scan.append(tc)
-            for fc in guild.forum_channels: channels_to_scan.append(fc)
+
+        if not monitored_channel_ids: # Check if the list is empty or None
+            # If no channels are explicitly monitored, return an empty list.
+            # The main task loop will then correctly skip scanning.
+            logging.info(f"No monitored channels are configured for guild '{guild.name}'. Thread scanning will be skipped.")
+            return channels_to_scan # Returns an empty list
+
+        # If monitored_channel_ids is not empty, proceed to populate the list:
+        for chan_id in monitored_channel_ids:
+            channel = guild.get_channel(chan_id)
+            if channel and isinstance(channel, (TextChannel, ForumChannel)):
+                channels_to_scan.append(channel)
+            else:
+                logging.warning(f"Configured monitored channel ID {chan_id} not found or is not a Text/Forum channel in guild '{guild.name}'.")
+        
+        # If monitored_channel_ids were provided but all were invalid,
+        # channels_to_scan will be empty, and the scan will be skipped, which is correct.
         return channels_to_scan
 
     async def process_archived_thread(self, thread: nextcord.Thread, guild_id: int, 
@@ -164,7 +171,7 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 except nextcord.HTTPException as e: 
                     logging.error(f"HTTP error deleting thread {thread.name} ({thread.id}): {e}")
                     if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Deletion FAILED", thread_obj=thread, details="Discord API error.", error_details_text=str(e), color=Color.red())
-            elif not is_dry_run: logging.info(f"Thread {thread.name} ({thread.id}) is closed but {delete_delay_config_days} day(s) delay has not passed. Phrase found at {timestamp_of_phrase}. Will be deleted after {delete_after_timestamp}.")
+            elif not is_dry_run: logging.debug(f"Thread {thread.name} ({thread.id}) is closed but {delete_delay_config_days} day(s) delay has not passed. Phrase found at {timestamp_of_phrase}. Will be deleted after {delete_after_timestamp}.")
         elif not is_dry_run: 
             try:
                 logging.info(f"Unarchiving non-exempted thread {thread.name} ({thread.id}) due to inactivity (no closure message found).")
@@ -340,18 +347,31 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
     @nextcord.slash_command(name="view_scanned_threads", description="Shows all detected archived threads in monitored channels.")
     @application_checks.has_permissions(manage_guild=True)
     async def view_scanned_threads(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True); guild = self.bot.get_guild(self.bot.target_guild_id)
-        if not guild: await interaction.followup.send("Target server not found by bot.", ephemeral=True); return
+        await interaction.response.defer(ephemeral=True)
+        guild = self.bot.get_guild(self.bot.target_guild_id)
+        if not guild:
+            await interaction.followup.send("Target server not found by bot.", ephemeral=True)
+            return
+
         current_guild_settings = database.get_guild_settings(self.bot.target_guild_id)
-        if not current_guild_settings: await interaction.followup.send("Settings not configured (delete delay missing).", ephemeral=True); return
+        if not current_guild_settings: # Technically, only delete_delay_days is strictly needed by process_archived_thread for this command
+            await interaction.followup.send("Settings not fully configured (e.g., delete delay missing).", ephemeral=True)
+            return
+        
         delete_delay_val_days = current_guild_settings.get('delete_delay_days', DEFAULT_DELETE_DELAY_DAYS)
         exempted_thread_ids = database.get_exempted_thread_ids_for_guild(self.bot.target_guild_id)
         channels_to_scan = await self._get_channels_to_scan(guild)
-        if not channels_to_scan: await interaction.followup.send("No channels to scan.", ephemeral=True); return
+
+        if not channels_to_scan:
+            await interaction.followup.send("No channels to scan (either not configured or none accessible).", ephemeral=True)
+            return
 
         logging.info(f"[VIEW_SCANNED] User {interaction.user} (ID: {interaction.user.id}) initiated scan in guild '{guild.name}' (ID: {guild.id})")
         logging.info(f"[VIEW_SCANNED] Channels to scan in '{guild.name}': {[f'{ch.name} ({type(ch).__name__})' for ch in channels_to_scan]}")
-        detected_threads_info: List[Dict] = []; errors_encountered: List[str] = []; scanned_thread_ids_this_command = set() 
+        
+        detected_threads_info: List[Dict] = []
+        errors_encountered: List[str] = []
+        scanned_thread_ids_this_command = set() 
 
         for channel_obj in channels_to_scan:
             logging.info(f"[VIEW_SCANNED] Scanning {type(channel_obj).__name__}: '{channel_obj.name}' (ID: {channel_obj.id})")
@@ -367,11 +387,20 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 for iter_info in iterators_to_check:
                     if iter_info["iter"] is None: continue
                     async for thread_item in iter_info["iter"]:
-                        logging.info(f"[VIEW_SCANNED] Found {iter_info['type']} thread: '{thread_item.name}' (ID: {thread_item.id}, Archived: {thread_item.archived}) in '{channel_obj.name}'")
+                        logging.debug(f"[VIEW_SCANNED] Found {iter_info['type']} thread: '{thread_item.name}' (ID: {thread_item.id}, Archived: {thread_item.archived}) in '{channel_obj.name}'")
                         if thread_item.id in scanned_thread_ids_this_command: 
                             logging.debug(f"[VIEW_SCANNED] Thread '{thread_item.name}' ID {thread_item.id} already listed, skipping.")
                             continue
-                        result = await self.process_archived_thread(thread_item, self.bot.target_guild_id, delete_delay_val_days, current_guild_settings, exempted_thread_ids, is_dry_run=True, check_closed_phrase_only=True)
+                        # Ensure guild_id is correctly passed (it's self.bot.target_guild_id or interaction.guild.id)
+                        result = await self.process_archived_thread(
+                            thread_item, 
+                            guild.id, # Use guild.id from the fetched guild object
+                            delete_delay_val_days, 
+                            current_guild_settings, 
+                            exempted_thread_ids, 
+                            is_dry_run=True, 
+                            check_closed_phrase_only=True
+                        )
                         if result: 
                             detected_threads_info.append(result)
                             threads_found_and_processed_in_channel += 1
@@ -387,11 +416,24 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 errors_encountered.append(f"Error scanning {channel_obj.mention}: {str(e)[:50]}")
         
         logging.info(f"[VIEW_SCANNED] Finished iteration for guild '{guild.name}'. Total threads added to info list for embed: {len(detected_threads_info)}. Total errors encountered: {len(errors_encountered)}.")
+
+        embeds_to_send = []
+        current_page_num = 1
+        # Max 3-4 "content" fields per embed to leave space for title, description, footer, and potential error field
+        # Discord's limit for field value characters is 1024. Total embed chars ~6000.
+        MAX_CONTENT_FIELDS_PER_EMBED = 3 
+        MAX_CHARS_PER_FIELD_VALUE = 1024 
+
         if not detected_threads_info and not errors_encountered: 
-            await interaction.followup.send("No archived threads were found in the monitored/accessible channels.", ephemeral=True); return
-        embed = nextcord.Embed(title="Detected Archived Threads", description="Listing all archived threads found and their status.", color=nextcord.Color.blue())
+            await interaction.followup.send("No archived threads were found in the monitored/accessible channels.", ephemeral=True)
+            return
+
         if detected_threads_info:
-            output_str = ""; field_count = 0; now_utc = datetime.now(timezone.utc)
+            current_embed = nextcord.Embed(title=f"Detected Archived Threads (Page {current_page_num})", description="Listing all archived threads found and their status.", color=nextcord.Color.blue())
+            current_field_text = ""
+            content_field_count_in_current_embed = 0
+            now_utc = datetime.now(timezone.utc)
+
             for i, thread_info in enumerate(detected_threads_info):
                 status = thread_info.get('status', 'Archived (Unknown)')
                 line = f"- **{thread_info.get('name', 'N/A')}** (ID: `{thread_info.get('id', 'N/A')}`)\n  In: <#{thread_info.get('parent_id', 'N/A')}> | Status: `{status}`"
@@ -402,24 +444,68 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                     if delete_due_at_dt <= now_utc: line += " | Deletion: **Overdue / Pending**"
                     else: line += f" | Deletes in: **{self._humanize_timedelta(delete_due_at_dt - now_utc)}** (<t:{int(delete_due_at_dt.timestamp())}:R>)"
                 line += "\n" 
-                if thread_info.get('error'): line += f"  *Error: {thread_info['error']}*\n"
-                if len(output_str) + len(line) > 1020 and i > 0:
-                    field_count += 1; embed.add_field(name=f"Detected Threads (Part {field_count})", value=output_str, inline=False); output_str = ""
-                output_str += line
-            if output_str: field_count += 1; embed.add_field(name=f"Detected Threads (Part {field_count})", value=output_str, inline=False)
-        else: embed.add_field(name="Detected Threads", value="None found.", inline=False)
+                if thread_info.get('error'): line += f"  *Error processing this thread: {thread_info['error']}*\n"
+
+                if len(current_field_text) + len(line) > MAX_CHARS_PER_FIELD_VALUE and current_field_text:
+                    current_embed.add_field(name=f"Threads (Batch {content_field_count_in_current_embed + 1})", value=current_field_text, inline=False)
+                    content_field_count_in_current_embed += 1
+                    current_field_text = "" 
+
+                    if content_field_count_in_current_embed >= MAX_CONTENT_FIELDS_PER_EMBED:
+                        current_embed.set_footer(text=f"Page {current_page_num} • {len(detected_threads_info)} total threads processed.")
+                        embeds_to_send.append(current_embed)
+                        current_page_num += 1
+                        current_embed = nextcord.Embed(title=f"Detected Archived Threads (Page {current_page_num})", description="Listing all archived threads found and their status.", color=nextcord.Color.blue())
+                        content_field_count_in_current_embed = 0
+                
+                current_field_text += line
+
+            if current_field_text: # Add any remaining text
+                current_embed.add_field(name=f"Threads (Batch {content_field_count_in_current_embed + 1})", value=current_field_text, inline=False)
+            
+            if current_embed.fields: # Ensure the last embed is added if it has content
+                current_embed.set_footer(text=f"Page {current_page_num} • {len(detected_threads_info)} total threads processed.")
+                embeds_to_send.append(current_embed)
+        
         if errors_encountered:
-            error_output = "\n".join(errors_encountered); 
-            embed.add_field(name="⚠️ Scan Issues", value=f"```{error_output[:1020]}```", inline=False); 
-            if not detected_threads_info : embed.color = nextcord.Color.red()
-        embed.set_footer(text=f"Found {len(detected_threads_info)} archived threads entries. This is a snapshot.")
-        try:
-            if not embed.fields: 
-                 if not detected_threads_info and not errors_encountered: embed.description = "No archived threads found and no scan issues."
-                 elif not detected_threads_info and errors_encountered: embed.description = "No threads found. See scan issues below."
-            if len(embed) > 5900: await interaction.followup.send(f"Found {len(detected_threads_info)} threads. List too long. Errors: {len(errors_encountered)}", ephemeral=True)
-            else: await interaction.followup.send(embed=embed, ephemeral=True)
-        except nextcord.HTTPException as e: await interaction.followup.send(f"Found {len(detected_threads_info)} threads, but an error occurred displaying them. Errors: {len(errors_encountered)}", ephemeral=True); logging.error(f"Error sending /view_scanned_threads embed: {e}")
+            error_summary = "\n".join(errors_encountered)
+            error_field_content = f"```{error_summary[:MAX_CHARS_PER_FIELD_VALUE - 10]}```" # -10 for markdown ```
+            if len(error_summary) > MAX_CHARS_PER_FIELD_VALUE - 10:
+                error_field_content += "\n*(Further errors truncated. Check console logs.)*"
+
+            if embeds_to_send and len(embeds_to_send[-1].fields) < (MAX_CONTENT_FIELDS_PER_EMBED + 1) and \
+               (len(embeds_to_send[-1]) + len(error_field_content) < 5800): # Try to add to last page
+                embeds_to_send[-1].add_field(name="⚠️ Scan Issues Encountered", value=error_field_content, inline=False)
+                if not detected_threads_info: embeds_to_send[-1].color = nextcord.Color.red()
+            else: # Create a new embed for errors
+                error_embed = nextcord.Embed(title="⚠️ Scan Issues Encountered", color=nextcord.Color.red())
+                error_embed.add_field(name="Details", value=error_field_content, inline=False)
+                error_embed.set_footer(text="Some channels or threads might not have been scanned correctly.")
+                embeds_to_send.append(error_embed)
+
+        if not embeds_to_send:
+            # This case should ideally be covered if errors_encountered leads to an error_embed
+            # or if detected_threads_info is empty and handled at the start.
+            # But as a fallback:
+            await interaction.followup.send("No information to display or an issue occurred generating the report.", ephemeral=True)
+            return
+
+        # Send all prepared embeds
+        for embed_to_send in embeds_to_send:
+            if not embed_to_send.fields and not (embed_to_send.description and detected_threads_info): # Skip completely empty embeds unless it's the initial "None found"
+                 if not (embed_to_send.description and not detected_threads_info and not errors_encountered): # Allow "None found" embed
+                    continue
+            try:
+                await interaction.followup.send(embed=embed_to_send, ephemeral=True)
+            except nextcord.HTTPException as e:
+                logging.error(f"[VIEW_SCANNED] HTTPException while sending paginated embed: {e}")
+                # If one fails, send a generic error for the rest
+                await interaction.followup.send(f"An error occurred while sending part of the thread list. Some information might be missing. (Total items: {len(detected_threads_info)}, Errors: {len(errors_encountered)})", ephemeral=True)
+                break 
+            except Exception as e:
+                logging.error(f"[VIEW_SCANNED] Exception while sending paginated embed: {e}", exc_info=True)
+                await interaction.followup.send(f"A critical error occurred while displaying thread list. Check logs.", ephemeral=True)
+                break
 
 def setup(bot: commands.Bot):
     bot.add_cog(TicketManagerCog(bot))
