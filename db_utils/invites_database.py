@@ -4,15 +4,30 @@ from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timezone
 import os
 
-DB_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/"
-PROD_DB_PATH = "/home/container/data/"
+DB_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/" # Your local development data directory
+PROD_DATA_DIRECTORY = "/home/container/data/"    # Container data directory
 
-INVITES_DATABASE_NAME = os.path.join(DB_DIRECTORY, "invites_cog.db")
+# Determine the actual base directory to use
+if os.path.exists("/home/container/"): # Check if running in your prod container
+    ACTUAL_INVITES_DATA_DIRECTORY = PROD_DATA_DIRECTORY
+    logging.info(f"Invites DB: Production environment detected. Using data directory: {ACTUAL_INVITES_DATA_DIRECTORY}")
+else:
+    ACTUAL_INVITES_DATA_DIRECTORY = DB_DIRECTORY
+    logging.info(f"Invites DB: Development environment detected. Using data directory: {ACTUAL_INVITES_DATA_DIRECTORY}")
 
-# Determine which DB path to use
-DB_DIRECTORY = PROD_DB_PATH if os.path.exists("/home/container/") else DB_DIRECTORY
-# Ensure the directory exists
-os.makedirs(os.path.dirname(DB_DIRECTORY), exist_ok=True)
+# Ensure the chosen ACTUAL_INVITES_DATA_DIRECTORY exists
+try:
+    if ACTUAL_INVITES_DATA_DIRECTORY and not os.path.exists(ACTUAL_INVITES_DATA_DIRECTORY):
+        os.makedirs(ACTUAL_INVITES_DATA_DIRECTORY, exist_ok=True)
+        logging.info(f"Invites DB: Successfully created data directory: {ACTUAL_INVITES_DATA_DIRECTORY}")
+except OSError as e:
+    logging.error(f"Invites DB CRITICAL: Could not create data directory {ACTUAL_INVITES_DATA_DIRECTORY}: {e}")
+    raise # Or handle as appropriate for your application
+
+# --- Now define your INVITES_DATABASE_NAME using the ACTUAL_INVITES_DATA_DIRECTORY ---
+INVITES_DATABASE_NAME = os.path.join(ACTUAL_INVITES_DATA_DIRECTORY, "invites_cog.db")
+
+logging.info(f"Invites database file will be at: {INVITES_DATABASE_NAME}")
 
 def get_invites_db_connection():
     try:

@@ -4,14 +4,38 @@ from typing import Optional, List, Tuple, Dict, Any, Set
 from datetime import datetime, timezone 
 import os 
 
-DB_MAIN_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/"
-PROD_DB_PATH = "/home/container/data/"
+DEV_DATA_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/" # Your local development data directory
+PROD_DATA_DIRECTORY = "/home/container/data/"    # Container data directory
 
-DATABASE_MAIN_NAME = os.path.join(DB_MAIN_DIRECTORY, "ticket_bot_settings.db")
+# Determine the actual base directory to use
+if os.path.exists("/home/container/"): # A common way to check if running in your prod container
+    ACTUAL_DATA_DIRECTORY = PROD_DATA_DIRECTORY
+    logging.info(f"Production environment detected. Using data directory: {ACTUAL_DATA_DIRECTORY}")
+else:
+    ACTUAL_DATA_DIRECTORY = DEV_DATA_DIRECTORY
+    logging.info(f"Development environment detected. Using data directory: {ACTUAL_DATA_DIRECTORY}")
 
-DB_MAIN_DIRECTORY = PROD_DB_PATH if os.path.exists("/home/container/") else DB_MAIN_DIRECTORY
-# Ensure the directory exists
-os.makedirs(os.path.dirname(DB_MAIN_DIRECTORY), exist_ok=True)
+# Ensure the chosen ACTUAL_DATA_DIRECTORY exists
+try:
+    # Check if ACTUAL_DATA_DIRECTORY is not empty and then if it exists
+    if ACTUAL_DATA_DIRECTORY and not os.path.exists(ACTUAL_DATA_DIRECTORY):
+        os.makedirs(ACTUAL_DATA_DIRECTORY, exist_ok=True)
+        logging.info(f"Successfully created data directory: {ACTUAL_DATA_DIRECTORY}")
+except OSError as e:
+    logging.error(f"CRITICAL: Could not create data directory {ACTUAL_DATA_DIRECTORY}: {e}")
+    # You might want to raise the error or exit if the bot cannot function without this directory
+    raise  # Or handle more gracefully if appropriate
+
+# --- Now define your database file names using the ACTUAL_DATA_DIRECTORY ---
+DATABASE_MAIN_NAME = os.path.join(ACTUAL_DATA_DIRECTORY, "ticket_bot_settings.db")
+
+# If this same logic applies to your invites database, and it's a separate file:
+INVITES_DATABASE_NAME = os.path.join(ACTUAL_DATA_DIRECTORY, "invites_tracker.db") # Example
+
+# Log the final paths being used
+logging.info(f"Main database file will be at: {DATABASE_MAIN_NAME}")
+if 'INVITES_DATABASE_NAME' in locals(): # Check if defined
+    logging.info(f"Invites database file will be at: {INVITES_DATABASE_NAME}")
 
 def get_db_connection(): # Connects to the main database
     conn = sqlite3.connect(DATABASE_MAIN_NAME)
