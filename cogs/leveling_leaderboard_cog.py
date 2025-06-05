@@ -357,7 +357,7 @@ class LevelingLeaderboardCog(commands.Cog, name="LevelingLeaderboard"):
         next_ts = int(time.time()) 
         if self.update_leaderboard_task.is_running() and self.update_leaderboard_task.next_iteration:
             next_ts = int(self.update_leaderboard_task.next_iteration.timestamp())
-        description_lines.append(f"Next scheduled post: <t:{next_ts}:R>")
+        description_lines.append(f"Next update: <t:{next_ts}:R>")
         embed.description = "\n".join(description_lines)
         embed.set_footer(text="Leveling Data Provided by Atom"); embed.timestamp = nextcord.utils.utcnow()
         return embed

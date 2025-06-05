@@ -63,7 +63,8 @@ INITIAL_EXTENSIONS = [
     'cogs.invite_tracker_cog',
     'cogs.auto_responder_cog',
     'cogs.role_monitor_cog',
-    'cogs.leveling_leaderboard_cog'
+    'cogs.leveling_leaderboard_cog',
+    'cogs.rainbow_role_cog'
 ]
 
 @bot.event
