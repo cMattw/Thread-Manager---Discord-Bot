@@ -96,7 +96,7 @@ class SuggestionView(ui.View):
             max_selectable = min(num_available_tags, 5) 
 
             tag_select = ui.Select(
-                placeholder="Select up to 5 relevant tags",
+                placeholder="Select relevant tags",
                 options=tag_options, 
                 min_values=0, 
                 max_values=max_selectable,
