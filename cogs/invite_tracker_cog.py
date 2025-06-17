@@ -675,6 +675,33 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
             description += f"- **{reward_data['invite_threshold']} Valid Invites** -> {role_mention}\n"
         embed.description = description if description else "No rewards set."
         await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @nextcord.slash_command(name="leaderboard", description="View the Invitation Leaderboard")
+    async def leaderboard(self, interaction: Interaction):
+        """Sends the Invitation Leaderboard."""
+        await interaction.response.defer()
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            return
+
+        top_inviters = idb.get_leaderboard(guild.id, limit=15) # Fetch top 15 for the command
+        embed = Embed(title="Invitation Leaderboard", color=Color.gold())
+        
+        description_lines = []
+        if top_inviters:
+            for i, inviter_data in enumerate(top_inviters):
+                user = guild.get_member(inviter_data['inviter_user_id'])
+                user_mention = user.mention if user else f"User ID `{inviter_data['inviter_user_id']}`"
+                description_lines.append(f"{i+1}. {user_mention} - **{inviter_data['total_valid_invites']}** Invites")
+        else:
+            description_lines.append("No one has any valid invites yet!")
+            
+        embed.description = "\n".join(description_lines)
+        embed.timestamp = datetime.now(timezone.utc)
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
 def setup(bot: commands.Bot):
     global aiohttp # Ensure aiohttp is accessible
