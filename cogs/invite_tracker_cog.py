@@ -685,15 +685,24 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
             await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
             return
 
-        top_inviters = idb.get_leaderboard(guild.id, limit=15) # Fetch top 15 for the command
+        top_inviters = idb.get_leaderboard(guild.id, limit=15)
         embed = Embed(title="Invitation Leaderboard", color=Color.gold())
         
         description_lines = []
         if top_inviters:
             for i, inviter_data in enumerate(top_inviters):
-                user = guild.get_member(inviter_data['inviter_user_id'])
-                user_display = user.mention if user else "Invalid User"
-                description_lines.append(f"{i+1}. {user_display} - **{inviter_data['total_valid_invites']}** Invites")
+                user_id = inviter_data['inviter_user_id']
+                user_display = "Invalid User"
+
+                try:
+                    member = await guild.fetch_member(user_id)
+                    user_display = member.mention
+                except nextcord.NotFound:
+                    user_display = "Invalid User"
+                except nextcord.HTTPException as e:
+                    logging.warning(f"Could not fetch member {user_id} for leaderboard command: {e}")
+
+                description_lines.append(f"{i+1}. {user_display} - **{inviter_data['total_valid_invites']}** Valid Invites")
         else:
             description_lines.append("No one has any valid invites yet!")
             
