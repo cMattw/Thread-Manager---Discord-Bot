@@ -406,7 +406,7 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
         if top_inviters:
             for i, inviter_data in enumerate(top_inviters):
                 user = guild.get_member(inviter_data['inviter_user_id']); user_mention = user.mention if user else f"User ID `{inviter_data['inviter_user_id']}`"
-                description_lines.append(f"{i+1}. {user_mention} - **{inviter_data['total_valid_invites']}** Valid ({inviter_data['total_raw_invites']} Total)")
+                description_lines.append(f"{i+1}. {user_mention} - **{inviter_data['total_valid_invites']}** Invites")
         else: description_lines.append("No one has any valid invites yet!")
         next_update_interval = self.update_leaderboard_task.minutes if self.update_leaderboard_task.minutes else 10
         next_update_timestamp = int((datetime.now(timezone.utc) + timedelta(minutes=next_update_interval)).timestamp())
@@ -468,9 +468,8 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
         embed.title = "Your Invite Statistics" if is_self_check else f"Invite Statistics for {target_user.display_name}"
         if target_user.display_avatar: embed.set_thumbnail(url=target_user.display_avatar.url)
         embed.add_field(name="User", value=target_user.mention, inline=False)
-        embed.add_field(name="Valid Invites", value=f"**{valid_invites}** (Verified Members)", inline=False)
-        embed.add_field(name="Total Invites", value=f"**{raw_invites}** (Invited members who are still in server)", inline=False)
-        if self.required_role_obj: embed.set_footer(text=f"A 'valid' invite means the invited member has verified on the server.")
+        embed.add_field(name="Total Invites", value=f"**{valid_invites}** (Invited members who are still in server)", inline=False)
+        if self.required_role_obj: embed.set_footer(text=f"A 'valid' invite means the invited member is still on the server.")
         else: embed.set_footer(text="Note: 'Valid invites' count relies on the 'required role' being set.")
         await interaction.followup.send(embed=embed, allowed_mentions=nextcord.AllowedMentions(users=[interaction.user]) if is_self_check else nextcord.AllowedMentions.none())
 
@@ -499,7 +498,7 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
         active_invitees_data = idb.get_active_invitees(interaction.guild.id, target_user.id)
 
         title_prefix = "Members You Invited" if is_self_check else f"Members Invited by {target_user.display_name}"
-        full_title = f"{title_prefix} (Still in Server)"
+        full_title = f"{title_prefix}"
 
         if not active_invitees_data:
             embed = Embed(
