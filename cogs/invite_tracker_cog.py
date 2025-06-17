@@ -692,8 +692,8 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
         if top_inviters:
             for i, inviter_data in enumerate(top_inviters):
                 user = guild.get_member(inviter_data['inviter_user_id'])
-                user_mention = user.mention if user else f"User ID `{inviter_data['inviter_user_id']}`"
-                description_lines.append(f"{i+1}. {user_mention} - **{inviter_data['total_valid_invites']}** Invites")
+                user_display = user.mention if user else "Invalid User"
+                description_lines.append(f"{i+1}. {user_display} - **{inviter_data['total_valid_invites']}** Invites")
         else:
             description_lines.append("No one has any valid invites yet!")
             
