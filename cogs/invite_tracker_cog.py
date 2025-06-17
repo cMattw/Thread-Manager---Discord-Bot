@@ -702,7 +702,7 @@ class InviteTrackerCog(commands.Cog, name="Invite Tracker"):
                 except nextcord.HTTPException as e:
                     logging.warning(f"Could not fetch member {user_id} for leaderboard command: {e}")
 
-                description_lines.append(f"{i+1}. {user_display} - **{inviter_data['total_valid_invites']}** Valid Invites")
+                description_lines.append(f"{i+1}. {user_display} - **{inviter_data['total_valid_invites']}**Invites")
         else:
             description_lines.append("No one has any valid invites yet!")
             
