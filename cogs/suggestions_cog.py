@@ -11,22 +11,95 @@ import asyncio
 from db_utils import suggestions_database as db
 
 # --- UI Components (Modal, Views) ---
+
 class SuggestionModal(ui.Modal):
-    def __init__(self, bot: commands.Bot, config: Dict):
+    def __init__(self, bot: commands.Bot, config: Dict, title: str = "", description: str = ""):
         super().__init__("Submit a Suggestion", timeout=600)
         self.bot = bot
         self.config = config
 
-        self.suggestion_title = ui.TextInput(label="Suggestion Title", style=TextInputStyle.short, placeholder="Enter a concise title for your suggestion", min_length=config.get('title_min_length', 10), max_length=min(config.get('title_max_length', 45), 45), required=True)
+        self.suggestion_title = ui.TextInput(
+            label="Suggestion Title",
+            style=TextInputStyle.short,
+            placeholder="Enter a concise title for your suggestion",
+            default_value=title,
+            min_length=config.get('title_min_length', 10),
+            max_length=min(config.get('title_max_length', 45), 45),
+            required=True
+        )
         self.add_item(self.suggestion_title)
 
-        self.suggestion_desc = ui.TextInput(label="Suggestion Description", style=TextInputStyle.paragraph, placeholder="Describe your suggestion in detail.", min_length=config.get('description_min_length', 50), max_length=min(config.get('description_max_length', 4000), 4000), required=True)
+        self.suggestion_desc = ui.TextInput(
+            label="Suggestion Description",
+            style=TextInputStyle.paragraph,
+            placeholder="Describe your suggestion in detail.",
+            default_value=description,
+            min_length=config.get('description_min_length', 50),
+            max_length=min(config.get('description_max_length', 4000), 4000),
+            required=True
+        )
         self.add_item(self.suggestion_desc)
 
     async def callback(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        view = SuggestionView(bot=self.bot, original_interaction=interaction, config=self.config, title=self.suggestion_title.value, description=self.suggestion_desc.value)
-        await view.send_initial_message()
+        # Instead of proceeding, show the preview view
+        preview_embed = Embed(
+            title="Suggestion Preview",
+            description=f"**{self.suggestion_title.value}**\n\n{self.suggestion_desc.value}",
+            color=Color.orange()
+        )
+        preview_embed.set_footer(text="This is how your suggestion will appear. You can edit it or confirm.")
+
+        preview_view = SuggestionPreviewView(
+            bot=self.bot,
+            original_interaction=interaction,
+            config=self.config,
+            title=self.suggestion_title.value,
+            description=self.suggestion_desc.value
+        )
+        await interaction.response.send_message(embed=preview_embed, view=preview_view, ephemeral=True)
+
+
+class SuggestionPreviewView(ui.View):
+    def __init__(self, bot: commands.Bot, original_interaction: Interaction, config: Dict, title: str, description: str):
+        super().__init__(timeout=600)
+        self.bot = bot
+        self.original_interaction = original_interaction
+        self.config = config
+        self.title = title
+        self.description = description
+
+    @ui.button(label="Edit", style=nextcord.ButtonStyle.grey, custom_id="edit_suggestion")
+    async def edit_button(self, button: ui.Button, interaction: Interaction):
+        # Open the modal again, pre-filled with the current content
+        edit_modal = SuggestionModal(self.bot, self.config, title=self.title, description=self.description)
+        await interaction.response.send_modal(edit_modal)
+        # We can stop the view here, as a new preview will be sent by the modal callback
+        self.stop()
+
+    @ui.button(label="Confirm", style=nextcord.ButtonStyle.green, custom_id="confirm_suggestion")
+    async def confirm_button(self, button: ui.Button, interaction: Interaction):
+        # Proceed to the next step (tag selection or anonymity choice)
+        await interaction.response.defer()
+        self.clear_items()
+        await interaction.edit_original_message(view=self) # Remove buttons
+
+        submission_view = SuggestionView(
+            bot=self.bot,
+            original_interaction=interaction,
+            config=self.config,
+            title=self.title,
+            description=self.description
+        )
+        # Use the interaction from the button click to send the next step
+        await submission_view.send_initial_message(interaction)
+        self.stop()
+
+    async def on_timeout(self):
+        self.clear_items()
+        try:
+            await self.original_interaction.edit_original_message(content="Suggestion preview timed out.", view=self)
+        except nextcord.NotFound:
+            pass
 
 class PreSuggestionView(ui.View):
     def __init__(self, bot: commands.Bot, config: Dict):
@@ -51,11 +124,12 @@ class SuggestionView(ui.View):
         self.description = description
         self.selected_tags: List[nextcord.ForumTag] = []
 
-    async def send_initial_message(self):
+    async def send_initial_message(self, interaction_to_use: Interaction):
+        """Sends the initial message for this view, either for tag selection or anonymity."""
         forum_channel_id = self.config.get('forum_channel_id')
         forum_channel: Optional[ForumChannel] = self.bot.get_channel(int(forum_channel_id)) if forum_channel_id else None
         if not forum_channel:
-            await self.original_interaction.followup.send("Configuration error: Forum channel not found.", ephemeral=True); return
+            await interaction_to_use.followup.send("Configuration error: Forum channel not found.", ephemeral=True); return
 
         user_selectable_tags = [tag for tag in forum_channel.available_tags if not tag.moderated]
 
@@ -65,10 +139,10 @@ class SuggestionView(ui.View):
             tag_select = ui.Select(placeholder="Select relevant tags", options=tag_options, min_values=0, max_values=max_selectable, custom_id="suggestion_tag_select")
             tag_select.callback = self.on_tag_select
             self.add_item(tag_select)
-            await self.original_interaction.followup.send("Please select the relevant tags for your suggestion.", view=self, ephemeral=True)
+            await interaction_to_use.followup.send("Please select the relevant tags for your suggestion.", view=self, ephemeral=True)
         else:
-            self.prepare_anonymity_buttons(self.original_interaction.user)
-            await self.original_interaction.followup.send("Submitting with your name helps us give you credit! However, you may choose to submit anonymously.", view=self, ephemeral=True)
+            self.prepare_anonymity_buttons(interaction_to_use.user)
+            await interaction_to_use.followup.send("Submitting with your name helps us give you credit! However, you may choose to submit anonymously.", view=self, ephemeral=True)
 
     def prepare_anonymity_buttons(self, user: nextcord.User):
         self.clear_items()
@@ -143,8 +217,6 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
         db.initialize_database(guild.id)
         logging.info(f"Initialized suggestions database for new guild: {guild.name} ({guild.id})")
 
-    # === THE FIX IS HERE ===
-    # The user-facing command is now a top-level /suggest command.
     @nextcord.slash_command(name="suggest", description="Submit a suggestion for Katipunan SMP.")
     async def suggest(self, interaction: Interaction):
         config = db.get_config(interaction.guild.id)
@@ -156,7 +228,6 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
             await interaction.response.send_modal(SuggestionModal(self.bot, config))
 
     # --- Admin Command Group ---
-    # The admin commands are now under the /suggestion group.
     @nextcord.slash_command(name="suggestion", description="Manage a suggestion.")
     async def suggestion_group(self, interaction: Interaction):
         pass
@@ -273,6 +344,32 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
         message: str = SlashOption(name="message", description="The message template to use.", required=True)):
         db.update_config(interaction.guild.id, {f"{status.lower()}_message": message})
         await interaction.response.send_message(f"✅ Message for '{status}' status updated.", ephemeral=True)
+        
+    @config_group.subcommand(name="set_limits", description="Set the min/max length for suggestion titles and descriptions.")
+    @application_checks.has_permissions(manage_guild=True)
+    async def set_limits(self, interaction: Interaction,
+        title_min: Optional[int] = SlashOption(name="title_min", description="Minimum title length.", required=False),
+        title_max: Optional[int] = SlashOption(name="title_max", description="Maximum title length.", required=False),
+        desc_min: Optional[int] = SlashOption(name="desc_min", description="Minimum description length.", required=False),
+        desc_max: Optional[int] = SlashOption(name="desc_max", description="Maximum description length.", required=False)):
+
+        config_updates = {}
+        if title_min is not None:
+            config_updates["title_min_length"] = title_min
+        if title_max is not None:
+            config_updates["title_max_length"] = title_max
+        if desc_min is not None:
+            config_updates["description_min_length"] = desc_min
+        if desc_max is not None:
+            config_updates["description_max_length"] = desc_max
+
+        if not config_updates:
+            await interaction.response.send_message("You must provide at least one limit to set.", ephemeral=True)
+            return
+
+        db.update_config(interaction.guild.id, config_updates)
+
+        await interaction.response.send_message(f"✅ Suggestion limits updated.", ephemeral=True)
 
     @config_group.subcommand(name="view", description="Displays the current suggestion system configuration.")
     @application_checks.has_permissions(manage_guild=True)
@@ -284,6 +381,18 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
         forum_channel = self.bot.get_channel(int(config.get('forum_channel_id'))) if config.get('forum_channel_id') else None
         embed.add_field(name="Forum Channel", value=forum_channel.mention if forum_channel else "Not Set", inline=False)
         embed.add_field(name="Pre-Modal Message", value=f"```{config.get('pre_modal_message')}```" if config.get('pre_modal_message') else "Not Set", inline=False)
+        
+        # Display character limits
+        title_min = config.get('title_min_length', 10)
+        title_max = config.get('title_max_length', 45)
+        desc_min = config.get('description_min_length', 50)
+        desc_max = config.get('description_max_length', 4000)
+
+        limits_value = (
+            f"**Title:** Min `{title_min}`, Max `{title_max}`\n"
+            f"**Description:** Min `{desc_min}`, Max `{desc_max}`"
+        )
+        embed.add_field(name="Character Limits", value=limits_value, inline=False)
         
         for status in ["Planned", "Implemented", "Denied"]:
             key = status.lower()
