@@ -168,7 +168,6 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         await interaction.send(embed=embed)
 
     @booster_group.subcommand(name="history", description="View the boost history of a specific user.")
-    @application_checks.has_permissions(manage_guild=True)
     async def history(self, interaction: Interaction, user: Member = SlashOption(description="The user to check.")):
         booster_stats = db.get_booster(str(user.id))
         if not booster_stats:
@@ -196,7 +195,11 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         embed.description = "\n".join(desc_parts)
         await interaction.send(embed=embed, ephemeral=False)
 
-    @booster_group.subcommand(name="config", description="Configuration commands for the booster tracker.")
+    @nextcord.slash_command(name="boost", description="Commands for managing server boosters.")
+    async def boost_group(self, interaction: Interaction):
+        pass
+
+    @boost_group.subcommand(name="config", description="Configuration commands for the booster tracker.")
     @application_checks.has_permissions(manage_guild=True)
     async def config_group(self, interaction: Interaction):
         pass
