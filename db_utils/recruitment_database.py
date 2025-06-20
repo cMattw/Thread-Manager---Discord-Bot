@@ -37,15 +37,21 @@ def initialize_database(guild_id: int):
                     config_id TEXT PRIMARY KEY,
                     forum_channel_id TEXT,
                     open_tag_id TEXT,
-                    closed_tag_id TEXT
+                    closed_tag_id TEXT,
+                    asset_channel_id TEXT 
                 )
             """)
             logging.info("Executing CREATE TABLE IF NOT EXISTS for managed_threads.")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS managed_threads (
-                    thread_id TEXT PRIMARY KEY, op_id TEXT NOT NULL, main_post_message_id TEXT NOT NULL,
-                    manager_panel_message_id TEXT, creation_timestamp INTEGER NOT NULL,
-                    last_reminder_sent_timestamp INTEGER, is_closed INTEGER DEFAULT 0
+                    thread_id TEXT PRIMARY KEY,
+                    op_id TEXT NOT NULL,
+                    main_post_message_id TEXT NOT NULL,
+                    manager_panel_message_id TEXT,
+                    creation_timestamp INTEGER NOT NULL,
+                    last_reminder_sent_timestamp INTEGER,
+                    is_closed INTEGER DEFAULT 0,
+                    starter_message_id TEXT
                 )
             """)
             logging.info("Executing CREATE TABLE IF NOT EXISTS for scheduled_deletions.")
@@ -62,6 +68,20 @@ def initialize_database(guild_id: int):
     except Exception as e:
         logging.error(f"CRITICAL ERROR during database initialization: {e}", exc_info=True)
 
+    migrate_add_starter_message_id()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS applicants (
+            application_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            thread_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            UNIQUE(thread_id, user_id)
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
 
 def get_config(guild_id: int) -> Optional[Dict[str, Any]]:
     with get_db_connection() as conn:
@@ -77,9 +97,12 @@ def update_config(guild_id: int, settings: Dict[str, Any]):
         conn.cursor().execute(query, tuple(params))
         conn.commit()
 # (The rest of the database functions are unchanged)
-def add_managed_thread(thread_id: int, op_id: int, main_post_id: int, panel_id: int, creation_ts: int):
+def add_managed_thread(thread_id: int, op_id: int, main_post_id: int, panel_id: int, creation_ts: int, starter_message_id: int):
     with get_db_connection() as conn:
-        conn.execute("INSERT OR REPLACE INTO managed_threads (thread_id, op_id, main_post_message_id, manager_panel_message_id, creation_timestamp) VALUES (?, ?, ?, ?, ?)", (str(thread_id), str(op_id), str(main_post_id), str(panel_id), creation_ts))
+        conn.execute(
+            "INSERT OR REPLACE INTO managed_threads (thread_id, op_id, main_post_message_id, manager_panel_message_id, creation_timestamp, starter_message_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(thread_id), str(op_id), str(main_post_id), str(panel_id), creation_ts, str(starter_message_id))
+        )
         conn.commit()
 
 def get_managed_thread(thread_id: int) -> Optional[Dict[str, Any]]:
@@ -134,4 +157,53 @@ def update_main_post_id(thread_id: int, new_message_id: int):
             "UPDATE managed_threads SET main_post_message_id = ? WHERE thread_id = ?",
             (str(new_message_id), str(thread_id))
         )
+        conn.commit()
+
+def add_applicant(thread_id: int, user_id: int):
+    """Adds a new applicant for a thread with 'pending' status."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO applicants (thread_id, user_id, status) VALUES (?, ?, ?)",
+        (thread_id, user_id, 'pending')
+    )
+    conn.commit()
+    conn.close()
+
+def get_applicant_status(thread_id: int, user_id: int) -> Optional[str]:
+    """Gets the application status for a user on a specific thread."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT status FROM applicants WHERE thread_id = ? AND user_id = ?",
+        (thread_id, user_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def update_applicant_status(thread_id: int, user_id: int, status: str):
+    """Updates an applicant's status to 'accepted' or 'denied'."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE applicants SET status = ? WHERE thread_id = ? AND user_id = ?",
+        (status, thread_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+def migrate_add_starter_message_id():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("ALTER TABLE managed_threads ADD COLUMN starter_message_id TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+def delete_managed_thread(thread_id: int):
+    with get_db_connection() as conn:
+        conn.execute("DELETE FROM managed_threads WHERE thread_id = ?", (str(thread_id),))
         conn.commit()
