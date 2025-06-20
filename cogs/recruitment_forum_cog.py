@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import asyncio
 import aiohttp
 
+# This utility file does not need to be changed, but must exist
 from db_utils import recruitment_database as db
 
 logger = logging.getLogger('nextcord.recruitment_forum_cog')
@@ -22,7 +23,7 @@ APPLICATION_DELETION_SECONDS = 10800
 WEEK_IN_SECONDS = 604800
 REMINDER_TIMEOUT_SECONDS = 43200
 
-# --- UI FOR CREATION FLOW ---
+# --- UI COMPONENTS ---
 
 class GuidelineView(ui.View):
     def __init__(self, bot, cog):
@@ -111,10 +112,8 @@ class FinalSubmitView(ui.View):
         await interaction.response.edit_message(content="Submission cancelled.", view=None, embed=None)
         self.stop()
 
-# --- UI FOR POST MANAGEMENT ---
-
 class EditPostModal(ui.Modal):
-    def __init__(self, cog: "RecruitmentForumManager", thread_id: int, current_title: str, current_reqs: str):
+    def __init__(self, cog, thread_id: int, current_title: str, current_reqs: str):
         super().__init__("Edit Recruitment Post", timeout=600)
         self.cog = cog
         self.thread_id = thread_id
@@ -124,29 +123,63 @@ class EditPostModal(ui.Modal):
         self.add_item(self.requirements)
     async def callback(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
+        
+        thread_data = db.get_managed_thread(self.thread_id)
         main_post = await self.cog.get_main_post_message(self.thread_id)
-        if not main_post: return await interaction.followup.send("Could not find the original post to edit.", ephemeral=True)
-        original_content, members_section, logo_url_line = main_post.content, "", ""
+        webhook_url = self.cog.config.get('permanent_webhook_url')
+
+        if not all([thread_data, main_post, webhook_url]):
+            await interaction.followup.send(
+                "Could not find the necessary data to edit the post. The permanent webhook may not be configured.",
+                ephemeral=True
+            )
+            return
+
+        # --- NEW: Logic to preserve Team Members and Logo ---
+        original_content = main_post.content
+        members_section_text = ""
+        logo_url_line = ""
+
+        # Find the start of the Team Members section if it exists
         if "\n\n**Team Members:**\n" in original_content:
-            members_section = "**Team Members:**\n" + original_content.split("\n\n**Team Members:**\n", 1)[1]
+            # Temporarily isolate everything after the main requirements
+            other_sections = original_content.split("\n\n**Member Requirements:**\n", 1)[1]
+            
+            # Find the members section within that part
+            if "**Team Members:**\n" in other_sections:
+                members_section_text = "**Team Members:**\n" + other_sections.split("**Team Members:**\n", 1)[1]
+
+        # Find any logo URL that might exist
         for line in original_content.split('\n'):
-            s_line = line.strip()
-            if s_line.startswith("http"):
-                logo_url_line = s_line
-                if logo_url_line in members_section: members_section = members_section.replace(logo_url_line, "").strip()
+            line = line.strip()
+            if line.startswith("https://") or line.startswith("http://"):
+                logo_url_line = line
+                # If the logo was part of the members section, remove it to prevent duplication
+                if logo_url_line in members_section_text:
+                    members_section_text = members_section_text.replace(logo_url_line, "").strip()
                 break
+
+        # Construct the new content from the modal's input fields
         new_content = f"## {self.team_name.value}\n\n**Member Requirements:**\n{self.requirements.value}"
-        if members_section: new_content += f"\n\n{members_section}"
-        if logo_url_line and logo_url_line not in new_content: new_content += f"\n\n{logo_url_line}"
-        thread, forum_channel = main_post.channel, main_post.channel.parent
+        
+        # Append the preserved sections in the correct order
+        if members_section_text:
+            new_content += f"\n\n{members_section_text}"
+        if logo_url_line:
+            new_content += f"\n\n{logo_url_line}"
+        # --- END NEW LOGIC ---
+
         try:
-            await main_post.delete()
-            webhook = await forum_channel.create_webhook(name=f"Recruiter {interaction.user.display_name[:30]}")
-            new_main_post_message = await webhook.send(thread=thread, content=new_content, username=interaction.user.display_name, avatar_url=interaction.user.display_avatar.url, wait=True)
-            await webhook.delete()
-            db.update_main_post_id(self.thread_id, new_main_post_message.id)
-            if isinstance(thread, nextcord.Thread) and thread.name != self.team_name.value: await thread.edit(name=self.team_name.value)
+            # Use the permanent webhook to edit the message in-place
+            webhook = nextcord.Webhook.from_url(webhook_url, session=self.cog.session)
+            await webhook.edit_message(message_id=int(thread_data['main_post_message_id']), content=new_content)
+            
+            thread = main_post.channel
+            if isinstance(thread, nextcord.Thread) and thread.name != self.team_name.value:
+                await thread.edit(name=self.team_name.value)
+
             await interaction.followup.send("Your recruitment post has been updated.", ephemeral=True)
+
         except Exception as e:
             logger.error(f"Failed to edit post for thread {self.thread_id}: {e}", exc_info=True)
             await interaction.followup.send("An unexpected error occurred while updating the post.", ephemeral=True)
@@ -226,95 +259,18 @@ class UpdateMembersModal(ui.Modal):
             await interaction.followup.send("An error occurred.", ephemeral=True)
 
 class ManagerPanelView(ui.View):
-    def __init__(self, cog: "RecruitmentForumManager", thread_id: int, main_post_url: str, is_closed: bool = False, team_name: str = "the Team"):
+    def __init__(self, thread_id: int, main_post_url: str, is_closed: bool = False, team_name: str = "the Team"):
         super().__init__(timeout=None)
-        self.cog = cog
-        self.thread_id = thread_id
-
         if is_closed:
-            reopen_button = ui.Button(label="Reopen", emoji="🔓", style=ButtonStyle.green)
-            reopen_button.callback = self.reopen_callback
-            self.add_item(reopen_button)
+            self.add_item(ui.Button(label="Reopen", emoji="🔓", style=ButtonStyle.green, custom_id=f"recman:reopen:{thread_id}"))
         else:
-            close_button = ui.Button(emoji="🔒", style=ButtonStyle.grey)
-            close_button.callback = self.close_callback
-            self.add_item(close_button)
-
-            edit_button = ui.Button(emoji="✏️", style=ButtonStyle.grey)
-            edit_button.callback = self.edit_post_callback
-            self.add_item(edit_button)
-
-            logo_button = ui.Button(emoji="🖼️", style=ButtonStyle.grey)
-            logo_button.callback = self.edit_logo_callback
-            self.add_item(logo_button)
-
-            members_button = ui.Button(emoji="👥", style=ButtonStyle.grey)
-            members_button.callback = self.update_members_callback
-            self.add_item(members_button)
-
+            self.add_item(ui.Button(emoji="🔒", style=ButtonStyle.grey, custom_id=f"recman:close:{thread_id}"))
+            self.add_item(ui.Button(emoji="✏️", style=ButtonStyle.grey, custom_id=f"recman:edit_post:{thread_id}"))
+            self.add_item(ui.Button(emoji="🖼️", style=ButtonStyle.grey, custom_id=f"recman:edit_logo:{thread_id}"))
+            self.add_item(ui.Button(emoji="👥", style=ButtonStyle.grey, custom_id=f"recman:update_members:{thread_id}"))
             button_team_name = (team_name[:20] + '…') if len(team_name) > 22 else team_name
-            apply_button = ui.Button(label=f"Join {button_team_name}", emoji="🤝", style=ButtonStyle.blurple)
-            apply_button.callback = self.apply_callback
-            self.add_item(apply_button)
-
-        if main_post_url:
-            self.add_item(ui.Button(label="Back to Top", emoji="⬆️", style=ButtonStyle.link, url=main_post_url))
-
-    async def _check_permissions(self, interaction: Interaction) -> bool:
-        thread, thread_data = await self.cog._get_thread_data(self.thread_id)
-        if not thread or not thread_data or interaction.user.id != int(thread_data['op_id']):
-            await interaction.response.send_message("Post not found or you lack permissions.", ephemeral=True)
-            return False
-        return True
-
-    # --- CALLBACKS FOR THE BUTTONS ---
-    
-    async def close_callback(self, interaction: Interaction):
-        if not await self._check_permissions(interaction): return
-        thread, _ = await self.cog._get_thread_data(self.thread_id)
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.update_thread_state(thread, is_closing=True)
-        await interaction.followup.send("Post closed.", ephemeral=True)
-
-    async def reopen_callback(self, interaction: Interaction):
-        if not await self._check_permissions(interaction): return
-        thread, _ = await self.cog._get_thread_data(self.thread_id)
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.update_thread_state(thread, is_closing=False)
-        await interaction.followup.send("Post reopened.", ephemeral=True)
-
-    async def edit_post_callback(self, interaction: Interaction):
-        if not await self._check_permissions(interaction): return
-        main_post = await self.cog.get_main_post_message(self.thread_id)
-        if not main_post: return await interaction.response.send_message("Could not find the original post to edit.", ephemeral=True)
-        content_lines, title, req_lines, in_reqs = main_post.content.split('\n'), "", [], False
-        for line in content_lines:
-            s_line = line.strip()
-            if s_line.startswith("## "): title = s_line[3:].strip(); continue
-            if s_line.lower() == "**member requirements:**": in_reqs = True; continue
-            if in_reqs and (s_line.startswith('**') or s_line.startswith('http')): in_reqs = False
-            if in_reqs: req_lines.append(line)
-        await interaction.response.send_modal(EditPostModal(self.cog, self.thread_id, title, "\n".join(req_lines).strip()))
-
-    async def edit_logo_callback(self, interaction: Interaction):
-        if not await self._check_permissions(interaction): return
-        await interaction.response.send_message("How would you like to change the logo?", view=EditLogoView(self.cog, self.thread_id), ephemeral=True)
-
-    async def update_members_callback(self, interaction: Interaction):
-        if not await self._check_permissions(interaction): return
-        main_post = await self.cog.get_main_post_message(self.thread_id)
-        current_members_text = ""
-        if main_post and "\n\n**Team Members:**\n" in main_post.content:
-            current_members_text = main_post.content.split("\n\n**Team Members:**\n", 1)[1].split("\n\nhttp")[0].replace("• ", "")
-        await interaction.response.send_modal(UpdateMembersModal(self.cog, self.thread_id, current_members_text))
-
-    async def apply_callback(self, interaction: Interaction):
-        thread, thread_data = await self.cog._get_thread_data(self.thread_id)
-        if not thread or not thread_data: return await interaction.response.send_message("This recruitment post could not be found.", ephemeral=True)
-        if interaction.user.id == int(thread_data['op_id']): return await interaction.response.send_message("You cannot apply to your own post.", ephemeral=True)
-        main_post = await self.cog.get_main_post_message(self.thread_id)
-        team_name = main_post.content.split('\n', 1)[0][3:].strip() if main_post and main_post.content.startswith("## ") else "this team"
-        await interaction.response.send_modal(ApplicationModal(self.cog, self.thread_id, team_name))
+            self.add_item(ui.Button(label=f"Join {button_team_name}", emoji="🤝", style=ButtonStyle.blurple, custom_id=f"recman:apply:{thread_id}"))
+        if main_post_url: self.add_item(ui.Button(label="Back to Top", emoji="⬆️", style=ButtonStyle.link, url=main_post_url))
 
 class ApplicationModal(ui.Modal):
     def __init__(self, cog, thread_id: int, team_name: str):
@@ -364,13 +320,12 @@ class ApplicationDecisionModal(ui.Modal):
             first_line = main_post.content.split('\n', 1)[0]
             if first_line.startswith("## "): team_name = first_line[3:].strip()
         action_past_tense = "Accepted" if self.action == 'accept' else "Denied"
-        deletion_timestamp = get_unix_time(APPLICATION_DELETION_SECONDS)
         desc = (f"{applicant.mention}, your application to join **{team_name}** has been {self.action}ed by {interaction.user.mention}."
-                f"\n\n-# This message will be deleted <t:{deletion_timestamp}:R>")
+                f"\n\n-# This message will be deleted <t:{get_unix_time(APPLICATION_DELETION_SECONDS)}:R>")
         embed = Embed(title=f"Application {action_past_tense}!", color=Color.green() if self.action == 'accept' else Color.red(), description=desc)
         if self.admin_message.value: embed.add_field(name="Message from Admin", value=self.admin_message.value, inline=False)
         result_msg = await thread.send(content=applicant.mention, embed=embed)
-        db.add_scheduled_deletion(result_msg.id, thread.id, deletion_timestamp)
+        db.add_scheduled_deletion(result_msg.id, thread.id, get_unix_time(APPLICATION_DELETION_SECONDS))
         await interaction.followup.send(f"You have `{self.action}ed` the application.", ephemeral=True)
 
 class WeeklyReminderView(ui.View):
@@ -530,7 +485,148 @@ class RecruitmentForumManager(commands.Cog, name="RecruitmentForumManager"):
                 db.update_thread_panel_id(message.channel.id, new_panel.id)
             except Exception as e:
                 logger.error(f"Failed to resend manager panel in {message.channel.id}: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: Interaction):
+        custom_id = interaction.data.get("custom_id")
+        if not custom_id or not (custom_id.startswith("recman:") or custom_id.startswith("recman_app:")): return
+        parts = custom_id.split(':')
+        if len(parts) != 3: return
+        if custom_id.startswith("recman:"):
+            action, thread_id_str = parts[1], parts[2]
+            if handler := getattr(self, f"_handle_{action}", None):
+                await handler(interaction, int(thread_id_str))
+        elif custom_id.startswith("recman_app:"):
+            action, applicant_id_str = parts[1], parts[2]
+            await self._handle_application_decision(interaction, action, int(applicant_id_str))
+
+    async def _handle_close(self, interaction: Interaction, thread_id: int):
+        if interaction.response.is_done(): return
+        thread, thread_data = await self._get_thread_data(thread_id)
+        if not thread or not thread_data or interaction.user.id != int(thread_data['op_id']):
+            return await interaction.response.send_message("Post not found or you lack permissions.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await self.update_thread_state(thread, is_closing=True)
+        await interaction.followup.send("Post closed.", ephemeral=True)
+
+    async def _handle_reopen(self, interaction: Interaction, thread_id: int):
+        if interaction.response.is_done(): return
+        thread, thread_data = await self._get_thread_data(thread_id)
+        if not thread or not thread_data or interaction.user.id != int(thread_data['op_id']):
+            return await interaction.response.send_message("Post not found or you lack permissions.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await self.update_thread_state(thread, is_closing=False)
+        await interaction.followup.send("Post reopened.", ephemeral=True)
+
+    async def _handle_apply(self, interaction: Interaction, thread_id: int):
+        if interaction.response.is_done(): return
+        thread, thread_data = await self._get_thread_data(thread_id)
+        if not thread or not thread_data:
+            return await interaction.response.send_message("This recruitment post could not be found.", ephemeral=True)
+        if interaction.user.id == int(thread_data['op_id']):
+            return await interaction.response.send_message("You cannot apply to your own post.", ephemeral=True)
+        main_post = await self.get_main_post_message(thread_id)
+        team_name = "this team"
+        if main_post:
+            first_line = main_post.content.split('\n', 1)[0]
+            if first_line.startswith("## "): team_name = first_line[3:].strip()
+        await interaction.response.send_modal(ApplicationModal(self, thread_id, team_name))
+
+    async def _handle_application_decision(self, interaction: Interaction, action: str, applicant_id: int):
+        if interaction.response.is_done():
+            logger.warning(f"Application decision interaction already acknowledged. Another listener may be interfering.")
+            return
+        thread_id = interaction.channel.id
+        thread_data = db.get_managed_thread(thread_id)
+        if not thread_data or interaction.user.id != int(thread_data['op_id']):
+            return await interaction.response.send_message("You are not the owner of this post.", ephemeral=True)
+        await interaction.response.send_modal(ApplicationDecisionModal(self, action, applicant_id, interaction.message.id))
+
+    async def _handle_apply_submit(self, interaction: Interaction, thread_id: int, ign: str, reason: str):
+        await interaction.response.defer(ephemeral=True)
+        thread_data = db.get_managed_thread(thread_id)
+        op_user = await interaction.guild.fetch_member(int(thread_data['op_id']))
+        thread = await self.bot.fetch_channel(thread_id)
+        main_post = await self.get_main_post_message(thread_id)
+        team_name = "a team"
+        if main_post:
+            first_line = main_post.content.split('\n', 1)[0]
+            if first_line.startswith("## "): team_name = first_line[3:].strip()
+        embed = Embed(title=f"New Application for {team_name}", color=Color.gold())
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        embed.add_field(name="Applicant", value=interaction.user.mention, inline=False)
+        embed.add_field(name="In-Game Name", value=ign, inline=False)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        await thread.send(content=f"{op_user.mention}, you have a new applicant.", embed=embed, view=ApplicationActionView(interaction.user))
+        await interaction.followup.send("Your application has been submitted!", ephemeral=True)
+
+    async def _handle_edit_post(self, interaction: Interaction, thread_id: int):
+        if interaction.response.is_done():
+            logger.warning("Edit Post interaction already acknowledged. Another listener might be interfering.")
+            return
+        
+        thread, thread_data = await self._get_thread_data(thread_id)
+        if not thread or not thread_data or interaction.user.id != int(thread_data['op_id']):
+            return await interaction.response.send_message("Post not found or you lack permissions.", ephemeral=True)
+        
+        main_post = await self.get_main_post_message(thread_id)
+        if not main_post:
+            return await interaction.response.send_message("Could not find the original post to edit.", ephemeral=True)
+        
+        # --- NEW, more robust parsing logic ---
+        content_lines = main_post.content.split('\n')
+        current_title = ""
+        requirements_lines = []
+        in_requirements_section = False
+
+        for line in content_lines:
+            stripped_line = line.strip()
+
+            # Find the title (which is always the first H2 header)
+            if stripped_line.startswith("## "):
+                current_title = stripped_line[3:].strip()
+                continue # Move to the next line
+
+            if in_requirements_section and stripped_line.startswith("**"):
+                in_requirements_section = False
+      
+            if stripped_line.lower() == "**member requirements:**":
+                in_requirements_section = True
+                continue 
+
+            if in_requirements_section:
+                if not (stripped_line.startswith("https://") or stripped_line.startswith("http://")):
+                    requirements_lines.append(line)
+
+        current_reqs = "\n".join(requirements_lines).strip()
+
+        modal = EditPostModal(self, thread_id, current_title, current_reqs)
+        await interaction.response.send_modal(modal)
+
+    async def _handle_edit_logo(self, interaction: Interaction, thread_id: int):
+        if interaction.response.is_done():
+            logger.warning("Edit Logo interaction already acknowledged."); return
+        thread, thread_data = await self._get_thread_data(thread_id)
+        if not thread or not thread_data or interaction.user.id != int(thread_data['op_id']):
+            return await interaction.response.send_message("Post not found or you lack permissions.", ephemeral=True)
+        await interaction.response.send_message("How would you like to change the logo?", view=EditLogoView(self, thread_id), ephemeral=True)
+
+    async def _handle_update_members(self, interaction: Interaction, thread_id: int):
+        if interaction.response.is_done():
+            logger.warning("Update Members interaction already acknowledged."); return
+        thread, thread_data = await self._get_thread_data(thread_id)
+        if not thread or not thread_data or interaction.user.id != int(thread_data['op_id']):
+            return await interaction.response.send_message("Post not found or you lack permissions.", ephemeral=True)
+        main_post = await self.get_main_post_message(thread_id)
+        current_members_text = ""
+        if main_post:
+            content_parts = main_post.content.split("\n\n**Team Members:**\n")
+            if len(content_parts) > 1:
+                current_members_text = content_parts[1].split("\n\nhttps://")[0].replace("• ", "")
+        await interaction.response.send_modal(UpdateMembersModal(self, thread_id, current_members_text))
     
+    # --- SLASH COMMANDS ---
+
     @nextcord.slash_command(name="recruitment")
     async def recruitment(self, interaction: Interaction): pass
 
@@ -611,8 +707,9 @@ class RecruitmentForumManager(commands.Cog, name="RecruitmentForumManager"):
             await interaction.response.send_message(f"✅ Tags configured.", ephemeral=True)
         except (nextcord.NotFound, nextcord.Forbidden):
             await interaction.response.send_message("Could not access the configured forum channel.", ephemeral=True)
-    
+
     # --- TASKS ---
+
     @tasks.loop(minutes=30)
     async def scheduled_deletion_task(self):
         await self.bot.wait_until_ready()
@@ -635,7 +732,7 @@ class RecruitmentForumManager(commands.Cog, name="RecruitmentForumManager"):
                 try:
                     thread = await self.bot.fetch_channel(int(thread_data['thread_id']))
                     op = await thread.guild.fetch_member(int(thread_data['op_id']))
-                    await thread.send(f"{op.mention}, is this post still active?", view=WeeklyReminderView(thread.id))
+                    await thread.send(f"{op.mention}, is this post still active? It will be auto-closed in 12 hours if there is no response.", view=WeeklyReminderView(thread.id))
                     db.update_reminder_timestamp(thread.id, now)
                 except Exception as e:
                     logger.warning(f"Could not send reminder to thread {thread_data['thread_id']}: {e}")
