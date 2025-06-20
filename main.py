@@ -67,7 +67,8 @@ INITIAL_EXTENSIONS = [
     'cogs.rainbow_role_cog',
     'cogs.suggestions_cog',
     'cogs.boost_tracker_cog',
-    'cogs.trade_manager_cog'
+    'cogs.trade_manager_cog',
+    'cogs.recruitment_forum_cog'
 ]
 
 @bot.event
