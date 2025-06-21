@@ -41,7 +41,7 @@ class RecruitModal(ui.Modal):
         super().__init__("Recruitment Post Details", timeout=600)
         self.bot = bot
         self.cog = cog
-        self.team_name = ui.TextInput(label="Team Name (also the post title)", style=TextInputStyle.short, placeholder="Your team's name", default_value=title, required=True, min_length=5, max_length=90)
+        self.team_name = ui.TextInput(label="Team Name (also the post title)", style=TextInputStyle.short, placeholder="Your team's name", default_value=title, required=True, min_length=5, max_length=45)
         self.add_item(self.team_name)
         self.requirements = ui.TextInput(label="Member Requirements", style=TextInputStyle.paragraph, placeholder="List your requirements, rules, and other details here.", default_value=requirements, required=True, min_length=20, max_length=2000)
         self.add_item(self.requirements)
@@ -173,7 +173,7 @@ class EditPostModal(ui.Modal):
             style=TextInputStyle.short,
             default_value=current_title,
             required=True,
-            max_length=90
+            max_length=45
         )
         self.add_item(self.team_name)
         self.requirements = ui.TextInput(
