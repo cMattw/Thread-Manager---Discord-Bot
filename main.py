@@ -68,7 +68,8 @@ INITIAL_EXTENSIONS = [
     'cogs.suggestions_cog',
     'cogs.boost_tracker_cog',
     'cogs.trade_manager_cog',
-    'cogs.recruitment_forum_cog'
+    'cogs.recruitment_forum_cog',
+    'cogs.store_manager_cog'
 ]
 
 @bot.event
