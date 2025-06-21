@@ -49,8 +49,23 @@ def initialize_database():
                 boost_end_timestamp INTEGER
             )
         """)
-        cursor.execute("CREATE TABLE IF NOT EXISTS cog_config (config_id TEXT PRIMARY KEY, announcement_channel_id TEXT, welcome_message_template TEXT, anniversary_message_template TEXT)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cog_config (
+                config_id TEXT PRIMARY KEY, 
+                announcement_channel_id TEXT, 
+                welcome_message_template TEXT, 
+                anniversary_message_template TEXT
+            )
+        """)
         cursor.execute("CREATE TABLE IF NOT EXISTS reward_roles (duration_months INTEGER PRIMARY KEY, role_id TEXT NOT NULL)")
+        
+        # --- ADDED: Safely add the new webhook column to the config table ---
+        try:
+            cursor.execute("SELECT announcement_webhook_url FROM cog_config LIMIT 1")
+        except sqlite3.OperationalError:
+            logging.info("Adding 'announcement_webhook_url' column to cog_config table.")
+            cursor.execute("ALTER TABLE cog_config ADD COLUMN announcement_webhook_url TEXT")
+            
         conn.commit()
         logging.info("Booster tracker database initialized/verified.")
 
@@ -61,18 +76,18 @@ def get_booster(user_id: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 def start_new_boost(user_id: str, guild_id: str, start_timestamp: int):
-    """Logs the start of a new boost, incrementing the event count."""
+    """Logs the start of a new boost streak without incrementing the count."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT OR IGNORE INTO boosters (user_id, guild_id) VALUES (?, ?)", (user_id, guild_id))
 
-        # Update core stats and increment the total_boost_count for the new event
+        # --- MODIFIED: Removed 'total_boost_count' increment to prevent double-counting ---
+        # The on_message listener in the cog now handles the increment.
         cursor.execute("""
             UPDATE boosters
             SET is_currently_boosting = 1,
                 current_boost_start_timestamp = ?,
-                last_anniversary_notified = 0,
-                total_boost_count = total_boost_count + 1
+                last_anniversary_notified = 0
             WHERE user_id = ?
         """, (start_timestamp, user_id))
 
@@ -110,6 +125,8 @@ def end_boost(user_id: str, end_timestamp: int):
 def increment_boost_count(user_id: str, amount: int = 1):
     """Increments the total boost count for a user."""
     with get_db_connection() as conn:
+        # --- ADDED: Ensure user exists before trying to increment ---
+        conn.cursor().execute("INSERT OR IGNORE INTO boosters (user_id, guild_id) VALUES (?, 'default')", (user_id,))
         conn.cursor().execute("UPDATE boosters SET total_boost_count = total_boost_count + ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
         
@@ -129,7 +146,7 @@ def get_config(guild_id: str) -> Optional[Dict[str, Any]]:
     """Retrieves the configuration for a specific guild."""
     with get_db_connection() as conn:
         row = conn.cursor().execute("SELECT * FROM cog_config WHERE config_id = ?", (guild_id,)).fetchone()
-        return dict(row) if row else None
+        return dict(row) if row else {} # Return empty dict if no config
 
 def update_config(guild_id: str, settings: Dict[str, Any]):
     """Updates one or more configuration settings for a guild."""
@@ -137,6 +154,7 @@ def update_config(guild_id: str, settings: Dict[str, Any]):
         cursor = conn.cursor()
         cursor.execute("INSERT OR IGNORE INTO cog_config (config_id) VALUES (?)", (guild_id,))
         for key, value in settings.items():
+            # This dynamic update remains the same and will handle the new webhook key perfectly.
             cursor.execute(f"UPDATE cog_config SET {key} = ? WHERE config_id = ?", (value, guild_id))
         conn.commit()
 
