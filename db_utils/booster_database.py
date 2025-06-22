@@ -54,18 +54,27 @@ def initialize_database():
                 config_id TEXT PRIMARY KEY, 
                 announcement_channel_id TEXT, 
                 welcome_message_template TEXT, 
-                anniversary_message_template TEXT
+                anniversary_message_template TEXT,
+                announcement_webhook_url TEXT
             )
         """)
-        cursor.execute("CREATE TABLE IF NOT EXISTS reward_roles (duration_months INTEGER PRIMARY KEY, role_id TEXT NOT NULL)")
-        
-        # --- ADDED: Safely add the new webhook column to the config table ---
+        # Add booster_announcement_webhook_url if missing
         try:
-            cursor.execute("SELECT announcement_webhook_url FROM cog_config LIMIT 1")
-        except sqlite3.OperationalError:
-            logging.info("Adding 'announcement_webhook_url' column to cog_config table.")
-            cursor.execute("ALTER TABLE cog_config ADD COLUMN announcement_webhook_url TEXT")
-            
+            cursor.execute("ALTER TABLE cog_config ADD COLUMN booster_announcement_webhook_url TEXT")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reward_roles (
+                duration_months INTEGER PRIMARY KEY, 
+                role_id TEXT NOT NULL
+            )
+        """)
+        try:
+            cursor.execute("ALTER TABLE boosters ADD COLUMN claimed_keys INTEGER DEFAULT 0")
+        except Exception as e:
+            if "duplicate column name" not in str(e):
+                raise
         conn.commit()
         logging.info("Booster tracker database initialized/verified.")
 
@@ -181,3 +190,21 @@ def update_anniversary_notified(user_id: str, month_milestone: int):
     with get_db_connection() as conn:
         conn.cursor().execute("UPDATE boosters SET last_anniversary_notified = ? WHERE user_id = ?", (month_milestone, user_id))
         conn.commit()
+
+def add_claimed_keys(user_id: str, amount: int):
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE boosters SET claimed_keys = COALESCE(claimed_keys, 0) + ? WHERE user_id = ?",
+            (amount, user_id)
+        )
+        conn.commit()
+
+def get_claimed_keys(user_id: str) -> int:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT claimed_keys FROM boosters WHERE user_id = ?", (user_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] is not None else 0

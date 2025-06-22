@@ -7,9 +7,9 @@ from db_utils import database # Assuming this is your main DB util, not specific
 from typing import Optional
 
 # --- Logging Setup ---
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(name)s - [%(module)s.%(funcName)s:%(lineno)d] %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
+#logging.basicConfig(level=logging.INFO,
+#                    format='%(asctime)s - %(levelname)s - %(name)s - [%(module)s.%(funcName)s:%(lineno)d] %(message)s',
+#                    datefmt='%Y-%m-%d %H:%M:%S')
 
 # --- Load Environment Variables ---
 load_dotenv()

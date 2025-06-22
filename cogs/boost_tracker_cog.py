@@ -7,6 +7,14 @@ import aiohttp
 
 from db_utils import booster_database as db
 
+logger = logging.getLogger('nextcord.boost_tracker_cog')
+if not logger.handlers:
+    stream_handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+logger.setLevel(logging.INFO)  # Or DEBUG for more verbosity
+
 NITRO_PINK = Color(0xf47fff)
 
 def format_duration(total_days: int) -> str:
@@ -40,6 +48,7 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         self.target_guild_id = bot.target_guild_id
         db.initialize_database()
         self.check_boosters_task.start()
+        self.sync_boosters_task.start()
         self.initial_scan_done = False
 
     def cog_unload(self):
@@ -53,10 +62,10 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         await self.bot.wait_until_ready()
         guild = self.bot.get_guild(self.target_guild_id)
         if not guild:
-            logging.error(f"Initial booster scan: Target guild {self.target_guild_id} not found.")
+            logger.error(f"Initial booster scan: Target guild {self.target_guild_id} not found.")
             return
         
-        logging.info("Performing initial scan for existing boosters...")
+        logger.info("Performing initial scan for existing boosters...")
         async for member in guild.fetch_members(limit=None):
             if member.premium_since is not None:
                 booster_data = db.get_booster(str(member.id))
@@ -64,7 +73,7 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
                     # IMPORTANT: Ensure your start_new_boost function does NOT increment the boost count.
                     db.start_new_boost(str(member.id), str(guild.id), int(member.premium_since.timestamp()))
         self.initial_scan_done = True
-        logging.info("Initial booster scan complete. Running first monthly count update.")
+        logger.info("Initial booster scan complete. Running first monthly count update.")
         await self.check_boosters_task.coro(self)
 
     @commands.Cog.listener()
@@ -89,86 +98,177 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             booster = message.author
             if not isinstance(booster, Member): return
 
-            logging.info(f"Detected boost message from {booster.name}. Incrementing count.")
+            logger.info(f"Detected boost message from {booster.name}. Incrementing count.")
             # Increment the boost count by 1 for this event
             db.increment_boost_count(str(booster.id), 1)
 
             # --- Send Announcement ---
             config = db.get_config(str(message.guild.id))
-            template = config.get("welcome_message_template", "🎉 {mention} has boosted the server!")
-            content = template.format(mention=booster.mention, user=booster.name, server=message.guild.name)
+            webhook_url = config.get("booster_announcement_webhook_url")
+            template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
 
-            webhook_url = config.get("announcement_webhook_url")
+            # Determine the current milestone (months boosted)
+            booster_data = db.get_booster(str(booster.id))
+            milestone = 1  # Default to 1 for a new boost
+            if booster_data and booster_data.get('current_boost_start_timestamp'):
+                now = datetime.now(timezone.utc)
+                boost_start = datetime.fromtimestamp(booster_data['current_boost_start_timestamp'], tz=timezone.utc)
+                milestone = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
+                if now.day < boost_start.day:
+                    milestone -= 1
+                milestone = max(1, milestone)
+            template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
+            month_label = "month" if milestone == 1 else "months"
+            content = template.format(
+                mention=booster.mention,
+                user=booster.name,
+                server=message.guild.name,
+                months=milestone,
+                month_label=month_label
+                )
             if webhook_url:
+                logger.info(f"Attempting to send anniversary message via webhook: {webhook_url}")
                 async with aiohttp.ClientSession() as session:
                     try:
                         webhook = Webhook.from_url(webhook_url, session=session)
-                        await webhook.send(content, username=self.bot.user.name, avatar_url=self.bot.user.display_avatar.url)
-                    except (nextcord.errors.InvalidArgument, nextcord.errors.NotFound):
-                        logging.error(f"Invalid webhook URL for guild {message.guild.id}")
-            else: # Fallback to channel
+                        await webhook.send(content)
+                        sent_announcements += 1
+                        logger.info("Anniversary message sent via webhook.")
+                    except Exception as e:
+                        logger.error(f"Failed to send anniversary webhook: {e}")
+            else:
                 channel_id = config.get("announcement_channel_id")
                 if channel_id and (channel := self.bot.get_channel(int(channel_id))):
                     await channel.send(content)
+                    sent_announcements += 1
+                    logger.info("Anniversary message sent via fallback channel.")
 
     # --- TASKS ---
+
+    @tasks.loop(hours=1)
+    async def sync_boosters_task(self):
+        await self.bot.wait_until_ready()
+        guild = self.bot.get_guild(self.target_guild_id)
+        if not guild:
+            logger.error("Guild not found for booster sync.")
+            return
+
+        booster_role = guild.premium_subscriber_role
+        if not booster_role:
+            logger.error("Server Booster role not found for booster sync.")
+            return
+
+        boosters_in_guild = set(member.id for member in booster_role.members)
+        db_boosters = set(int(b['user_id']) for b in db.get_all_boosters_for_leaderboard() if b.get('is_currently_boosting'))
+
+        # Mark as not boosting in DB if not in role
+        for user_id in db_boosters - boosters_in_guild:
+            db.end_boost(str(user_id), int(datetime.now(timezone.utc).timestamp()))
+            logger.info(f"Marked user {user_id} as not boosting (sync task).")
+
+        # Mark as boosting in DB if in role but not in DB
+        for user_id in boosters_in_guild - db_boosters:
+            member = guild.get_member(user_id)
+            if member and member.premium_since:
+                db.start_new_boost(str(user_id), str(guild.id), int(member.premium_since.timestamp()))
+                logger.info(f"Marked user {user_id} as boosting (sync task).")
+
+        logger.info(
+            f"Booster sync complete. "
+            f"Marked {len(db_boosters - boosters_in_guild)} as not boosting, "
+            f"{len(boosters_in_guild - db_boosters)} as boosting."
+        )
     
-    @tasks.loop(hours=24)
+    @tasks.loop(hours=1)
     async def check_boosters_task(self):
         await self.bot.wait_until_ready()
         guild = self.bot.get_guild(self.target_guild_id)
         if not guild: return
 
-        logging.info("Running daily check for monthly booster count updates...")
+        logger.info("Running daily check for monthly booster count updates...")
         active_boosters = [b for b in db.get_all_boosters_for_leaderboard() if b.get('is_currently_boosting')]
         now = datetime.now(timezone.utc)
         config = db.get_config(str(guild.id))
 
+        # Get the role ID and month threshold from config
+        reward_roles = db.get_all_reward_roles()  # List of dicts: {'duration_months': int, 'role_id': str}
+        if not reward_roles:
+            logger.info("No reward roles configured.")
+            return
+
         for booster_data in active_boosters:
             user_id = str(booster_data['user_id'])
             start_ts = booster_data.get('current_boost_start_timestamp')
-            if not start_ts: continue
+            if not start_ts:
+                continue
+
+            boost_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+            months_boosted = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
+            if now.day < boost_start.day:
+                months_boosted -= 1
 
             member = guild.get_member(int(user_id))
-            if not member: continue
+            if not member:
+                try:
+                    member = await guild.fetch_member(int(user_id))
+                except Exception:
+                    logger.warning(f"Could not fetch member {user_id}")
+                    continue
 
-            start_time = datetime.fromtimestamp(start_ts, tz=timezone.utc)
-            months_in_streak = int((now - start_time).days / 30.44)
-            last_notified_month = booster_data.get('last_anniversary_notified', 0)
+            for reward in reward_roles:
+                milestone = reward['duration_months']
+                role = guild.get_role(int(reward['role_id']))
+                if not role:
+                    logger.warning(f"Role ID {reward['role_id']} not found in guild.")
+                    continue
+                logger.info(f"User {member} ({user_id}): months_boosted={months_boosted}, milestone={milestone}, has_role={role in member.roles}")
+                if months_boosted >= milestone and role not in member.roles:
+                    try:
+                        await member.add_roles(role, reason=f"Reached {milestone} months of boosting.")
+                        assigned_roles += 1
+                        logger.info(f"Gave {role.name} to {member.display_name} for {months_boosted} months of boosting.")
+                    except Exception as e:
+                        logger.error(f"Failed to assign role to {member.display_name}: {e}")                        
 
-            if months_in_streak > last_notified_month:
-                new_months_passed = months_in_streak - last_notified_month
-                if new_months_passed > 0:
-                    logging.info(f"User {user_id} crossed {new_months_passed} new month thresholds. Incrementing boost count.")
-                    # This increments the count for anniversary, separate from the on_message increment
-                    db.increment_boost_count(user_id, new_months_passed)
-                
-                db.update_anniversary_notified(user_id, months_in_streak)
-                
-                # --- ADDED: Send Anniversary Announcement ---
-                template = config.get("anniversary_message_template", "🎂 Happy {months}-month boost anniversary, {mention}!")
-                content = template.format(mention=member.mention, user=member.name, months=months_in_streak, server=guild.name)
+        reward_roles = db.get_all_reward_roles()  # List of dicts: {'duration_months': int, 'role_id': str}
+        if not reward_roles:
+            logger.info("No reward roles configured.")
+            return
 
-                webhook_url = config.get("announcement_webhook_url")
-                if webhook_url:
-                    async with aiohttp.ClientSession() as session:
-                        try:
-                            webhook = Webhook.from_url(webhook_url, session=session)
-                            await webhook.send(content, username=self.bot.user.name, avatar_url=self.bot.user.display_avatar.url)
-                        except (nextcord.errors.InvalidArgument, nextcord.errors.NotFound):
-                            logging.error(f"Invalid webhook URL for guild {guild.id}")
-                else: # Fallback to channel
-                    channel_id = config.get("announcement_channel_id")
-                    if channel_id and (channel := self.bot.get_channel(int(channel_id))):
-                        await channel.send(content)
+        for booster_data in active_boosters:
+            user_id = str(booster_data['user_id'])
+            start_ts = booster_data.get('current_boost_start_timestamp')
+            if not start_ts:
+                continue
+
+            boost_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+            months_boosted = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
+            if now.day < boost_start.day:
+                months_boosted -= 1
+
+            member = guild.get_member(int(user_id))
+            if not member:
+                continue
+
+            for reward in reward_roles:
+                milestone = reward['duration_months']
+                role = guild.get_role(int(reward['role_id']))
+                if not role:
+                    continue
+                if months_boosted >= milestone and role not in member.roles:
+                    try:
+                        await member.add_roles(role, reason=f"Reached {milestone} months of boosting.")
+                        logger.info(f"Gave {role.name} to {member.display_name} for {months_boosted} months of boosting.")
+                    except Exception as e:
+                        logger.error(f"Failed to assign role to {member.display_name}: {e}")
 
     # --- COMMANDS ---
 
-    @nextcord.slash_command(name="booster", description="Commands for managing server boosters.")
-    async def booster_group(self, interaction: Interaction):
+    @nextcord.slash_command(name="boost", description="User booster info and leaderboard.")
+    async def boost_group(self, interaction: Interaction):
         pass
 
-    @booster_group.subcommand(name="list", description="Displays the booster leaderboard.")
+    @boost_group.subcommand(name="list", description="Displays the booster leaderboard.")
     async def list_boosters(self, interaction: Interaction,
         sort_by: str = SlashOption(
             name="sort_by",
@@ -180,7 +280,6 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             },
             default="count"
         )):
-        # ... (This command remains unchanged) ...
         all_boosters_data = db.get_all_boosters_for_leaderboard()
         if not all_boosters_data:
             return await interaction.send("There are no boosters to display.", ephemeral=True)
@@ -216,18 +315,20 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             else: # duration
                 total_days = get_true_total_duration(booster_data)
                 display_str = f"Total duration: `{format_duration(total_days)}`"
-            description += f"**{i}.** {user.mention} - {display_str}\n"
+            line = f"**{i}.** {user.mention} - {display_str}\n"
+            if not booster_data.get('is_currently_boosting'):
+                line = f"~~{line.strip()}~~\n"
+            description += line
         if not description: description = "No boosters to display for this category."
         embed.description = description
         await interaction.send(embed=embed)
 
-    @booster_group.subcommand(name="history", description="View the boost history of a specific user.")
+    @boost_group.subcommand(name="status", description="View the boost status of a specific user.")
     async def history(self, interaction: Interaction, user: Member = SlashOption(description="The user to check.")):
-        # ... (This command remains unchanged) ...
         booster_stats = db.get_booster(str(user.id))
         if not booster_stats:
             return await interaction.send(f"{user.display_name} has no boosting history.", ephemeral=False)
-        embed = Embed(title=f"Boost History for {user.display_name}", color=NITRO_PINK)
+        embed = Embed(title=f"{user.display_name}'s Boost Status", color=NITRO_PINK)
         embed.set_thumbnail(url=user.display_avatar.url)
         total_boosts = booster_stats.get('total_boost_count', 0)
         first_boost_ts = booster_stats.get('first_boost_timestamp')
@@ -236,19 +337,63 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         if booster_stats.get('is_currently_boosting') and booster_stats.get('current_boost_start_timestamp'):
             current_start = datetime.fromtimestamp(booster_stats.get('current_boost_start_timestamp'), tz=timezone.utc)
             total_days += (now - current_start).days
+
+        boost_status = "**Active**" if booster_stats.get('is_currently_boosting') else "**Inactive**"
+        claimed_keys = booster_stats.get('claimed_keys', 0)
+        available_keys = max(0, total_boosts * 2 - claimed_keys)
+
         desc_parts = [
+            f"**Status:** {boost_status}",
             f"**Total Boost Count:** `{total_boosts}`",
             f"**Total Time Boosted:** `{format_duration(total_days)}`"
         ]
         if first_boost_ts:
             desc_parts.append(f"**First Boosted On:** <t:{first_boost_ts}:D>")
         embed.description = "\n".join(desc_parts)
+
+        # Add the Rewards field
+        embed.add_field(
+            name="Rewards",
+            value=f"**Available:** `{available_keys} Keys`\n**Claimed:** `{claimed_keys} Keys`",
+            inline=False
+        )
+
         await interaction.send(embed=embed, ephemeral=False)
+
+    @nextcord.slash_command(name="booster", description="Commands for managing server boosters.")
+    async def booster_group(self, interaction: Interaction):
+        pass
         
+    @booster_group.subcommand(name="reward", description="Add or deduct claimed reward keys to a booster.")
+    @application_checks.has_permissions(manage_guild=True)
+    async def reward(self, interaction: Interaction, user: Member = SlashOption(description="The user to add/deduct keys for."), amount: int = SlashOption(description="Number of keys to add (use negative to deduct).")):
+        booster_stats = db.get_booster(str(user.id))
+        if not booster_stats:
+            return await interaction.send(f"{user.display_name} has no boosting history.", ephemeral=True)
+
+        total_boosts = booster_stats.get('total_boost_count', 0)
+        claimed_keys = booster_stats.get('claimed_keys', 0)
+        available_keys = max(0, total_boosts * 2 - claimed_keys)
+
+        if amount == 0:
+            return await interaction.send("Amount must not be zero.", ephemeral=True)
+        if amount > 0:
+            if amount > available_keys:
+                return await interaction.send(
+                    f"Cannot add {amount} keys. Only {available_keys} available for {user.display_name}.", ephemeral=True
+                )
+            db.add_claimed_keys(str(user.id), amount)
+            await interaction.send(f"Added {amount} key(s) to {user.display_name}.", ephemeral=True)
+        else:  # amount < 0
+            if abs(amount) > claimed_keys:
+                return await interaction.send(
+                    f"Cannot deduct {abs(amount)} keys. {user.display_name} only has {claimed_keys} claimed.", ephemeral=True
+                )
+            db.add_claimed_keys(str(user.id), amount)  # amount is negative
+            await interaction.send(f"Deducted {abs(amount)} key(s) from {user.display_name}.", ephemeral=True)
+
     # --- CONFIG GROUP ---
     
-    # Note: Your original file had two 'boost_group' definitions. I've consolidated them.
-    # The config group should be a subcommand of the main 'booster' group.
     @booster_group.subcommand(name="config", description="Configuration commands for the booster tracker.")
     async def config_group(self, interaction: Interaction):
         pass
@@ -265,7 +410,7 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
     async def set_webhook(self, interaction: Interaction, url: str):
         if not url.startswith("https://discord.com/api/webhooks/"):
             return await interaction.send("This does not look like a valid Discord webhook URL.", ephemeral=True)
-        db.update_config(str(interaction.guild.id), {'announcement_webhook_url': url})
+        db.update_config(str(interaction.guild.id), {'booster_announcement_webhook_url': url})
         await interaction.send(f"Booster announcement webhook has been set.", ephemeral=True)
 
     @config_group.subcommand(name="message", description="Sets the custom message for new boosters or the monthly anniversary.")
@@ -298,8 +443,8 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         await interaction.response.defer(ephemeral=True)
         config = db.get_config(str(interaction.guild.id))
 
-        webhook_url = config.get("announcement_webhook_url", "Not Set")
-        webhook_status = "Set" if webhook_url != "Not Set" else "Not Set"
+        webhook_url = config.get("booster_announcement_webhook_url")
+        webhook_status = "Set" if webhook_url else "Not Set"
         
         channel_id = config.get("announcement_channel_id")
         channel_status = f"<#{channel_id}>" if channel_id else "Not Set"
@@ -308,13 +453,85 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         anniv_msg = config.get("anniversary_message_template", "Not Set")
 
         embed = Embed(title="Booster Tracker Configuration", color=NITRO_PINK, timestamp=datetime.now(timezone.utc))
-        embed.add_field(name="🔗 Webhook URL", value=webhook_status, inline=False)
-        embed.add_field(name="📢 Announcement Channel (Fallback)", value=channel_status, inline=False)
+        embed.add_field(name="Webhook URL", value=webhook_status, inline=False)
+        embed.add_field(name="Announcement Channel (Fallback)", value=channel_status, inline=False)
         embed.add_field(name="Welcome Message", value=f"```{welcome_msg}```", inline=False)
         embed.add_field(name="Anniversary Message", value=f"```{anniv_msg}```", inline=False)
         
         await interaction.send(embed=embed)
 
+    @nextcord.slash_command(name="test_boost_task", description="Manually run the booster check task (admin only, full process).")
+    @application_checks.has_permissions(manage_guild=True)
+    async def test_boost_task(self, interaction: Interaction):
+        await self.bot.wait_until_ready()
+        guild = self.bot.get_guild(self.target_guild_id)
+        if not guild:
+            await interaction.send("Target guild not found.", ephemeral=True)
+            return
 
-def setup(bot: commands.Bot):
+        now = datetime.now(timezone.utc)
+        config = db.get_config(str(guild.id))
+        reward_roles = db.get_all_reward_roles()
+        if not reward_roles:
+            await interaction.send("No reward roles configured.", ephemeral=True)
+            return
+
+        active_boosters = [b for b in db.get_all_boosters_for_leaderboard() if b.get('is_currently_boosting')]
+        sent_announcements = 0
+        assigned_roles = 0
+
+        for booster_data in active_boosters:
+            user_id = str(booster_data['user_id'])
+            start_ts = booster_data.get('current_boost_start_timestamp')
+            if not start_ts:
+                continue
+
+            boost_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+            months_boosted = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
+            if now.day < boost_start.day:
+                months_boosted -= 1
+
+            member = guild.get_member(int(user_id))
+            if not member:
+                continue
+
+            for reward in reward_roles:
+                milestone = reward['duration_months']
+                role = guild.get_role(int(reward['role_id']))
+                if not role:
+                    continue
+
+                # Assign role if milestone reached and not already assigned
+                if months_boosted >= milestone and role not in member.roles:
+                    try:
+                        await member.add_roles(role, reason=f"Reached {milestone} months of boosting.")
+                        assigned_roles += 1
+                    except Exception as e:
+                        logger.error(f"Failed to assign role to {member.display_name}: {e}")
+
+                # Send anniversary message if just hit the milestone this month
+                # (You may want to track last notified milestone in your DB for production)
+                if months_boosted >= milestone:
+                    template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
+                    month_label = "month" if months_boosted == 1 else "months"
+                    content = template.format(
+                        mention=member.mention,
+                        user=member.name,
+                        server=guild.name,
+                        months=months_boosted,
+                        month_label=month_label
+                    )
+                    webhook_url = config.get("booster_announcement_webhook_url")
+                    if webhook_url:
+                        logger.info(f"Attempting to send anniversary message via webhook: {webhook_url}")
+                        async with aiohttp.ClientSession() as session:
+                            try:
+                                webhook = Webhook.from_url(webhook_url, session=session)
+                                await webhook.send(content)
+                                sent_announcements += 1
+                                logger.info("Anniversary message sent via webhook.")
+                            except Exception as e:
+                                logger.error(f"Failed to send anniversary webhook: {e}")
+
+def setup(bot):
     bot.add_cog(BoostTrackerCog(bot))
