@@ -59,10 +59,19 @@ class TransactionHistoryView(ui.View):
                 role_id = all_sub_items[item_name].get('associated_role_id')
                 if role_id and role_id in user_active_subs:
                     expiry_timestamp = user_active_subs[role_id]['removal_timestamp']
-                    entry += f"\n> **Expires:** <t:{expiry_timestamp}:f>"
+                    if expiry_timestamp < get_unix_time():
+                        entry += f"\n> **Status:** `Expired` (was <t:{expiry_timestamp}:f>)"
+                    else:
+                        entry += f"\n> **Expires:** <t:{expiry_timestamp}:f>"
                 else:
-                    entry += "\n> **Status:** `Permanent or Expired`"
-
+                    # Check the transaction itself for permanent/expired status
+                    if trans.get('is_permanent', 0):
+                        entry += "\n> **Status:** `Permanent`"
+                    elif trans.get('expired', 0):
+                        entry += "\n> **Status:** `Expired`"
+                    else:
+                        # Fallback: treat as expired for legacy data
+                        entry += "\n> **Status:** `Expired`"
             description.append(entry)
 
         embed.description = "\n\n".join(description) if description else "No transactions on this page."
@@ -182,51 +191,44 @@ class EditTransactionModal(ui.Modal):
         self.is_subscription = is_subscription
         self.subscription_details = subscription_details
 
-        # --- Always-present Fields ---
+        # Always-present fields
         self.item_desc = ui.TextInput(label="Item Description", default_value=transaction_data.get('item_description', ''), max_length=200)
         self.add_item(self.item_desc)
 
         self.ign = ui.TextInput(label="In-Game Name", default_value=transaction_data.get('ingame_name', ''), required=False, max_length=50)
         self.add_item(self.ign)
 
-        # --- Conditional Fields ---
+        # Always show duration fields for subscriptions
         if self.is_subscription:
-            # For subscriptions, show duration fields
-            # This check also implicitly excludes permanent subs, which is correct
-            if self.subscription_details:
-                self.months_edit = ui.TextInput(
-                    label="Add or Remove Months",
-                    style=TextInputStyle.short,
-                    placeholder="e.g., 2 to add, -1 to remove",
-                    required=False, max_length=4
-                )
-                self.add_item(self.months_edit)
+            self.days_edit = ui.TextInput(
+                label="Add or Remove Days",
+                style=TextInputStyle.short,
+                placeholder="e.g., 15 to add, -7 to remove",
+                required=False, max_length=6
+            )
+            self.add_item(self.days_edit)
 
-                self.days_edit = ui.TextInput(
-                    label="Add or Remove Days",
-                    style=TextInputStyle.short,
-                    placeholder="e.g., 15 to add, -7 to remove",
-                    required=False, max_length=4
-                )
-                self.add_item(self.days_edit)
-            # The 'quantity' field is intentionally omitted for subscriptions
-            self.quantity = None # Ensure self.quantity exists but is None
+            self.timestamp_edit = ui.TextInput(
+                label="Set Expiry (Unix Timestamp)",
+                style=TextInputStyle.short,
+                placeholder="e.g., 1750000000 (leave blank to ignore)",
+                required=False, max_length=15
+            )
+            self.add_item(self.timestamp_edit)
+            self.quantity = None
         else:
-            # For non-subscriptions, show quantity field
             self.quantity = ui.TextInput(label="Quantity", default_value=str(transaction_data.get('quantity', '')), required=False, max_length=10)
             self.add_item(self.quantity)
-            # Ensure subscription fields are None
-            self.months_edit = None
             self.days_edit = None
+            self.timestamp_edit = None
 
-        # --- Always-present Notes Field ---
+        # Always add notes as the last field (will be 5th field)
         self.notes = ui.TextInput(label="Notes", style=TextInputStyle.paragraph, default_value=transaction_data.get('notes', ''), required=False, max_length=1000)
         self.add_item(self.notes)
 
     async def callback(self, interaction: Interaction):
-        # 1. Update the standard transaction details
         qty_val = None
-        if self.quantity: # Only try to get value if the field was created
+        if self.quantity:
             try:
                 qty_val = int(self.quantity.value) if self.quantity.value and self.quantity.value.strip() else None
             except ValueError:
@@ -238,38 +240,67 @@ class EditTransactionModal(ui.Modal):
             "ingame_name": self.ign.value,
             "notes": self.notes.value
         }
-        # Only include quantity in the update if it's not a subscription
         if not self.is_subscription:
             updates["quantity"] = qty_val
         
         db.update_transaction(self.transaction_data['transaction_id'], updates)
         response_messages = [f"✅ Transaction ID `{self.transaction_data['transaction_id']}` has been updated."]
 
-        # 2. Update subscription duration if applicable and specified
-        if self.is_subscription and self.subscription_details and self.months_edit and self.days_edit:
+        # --- Duration Editing Logic ---
+        if self.is_subscription and self.days_edit and self.timestamp_edit:
             try:
-                months_val = int(self.months_edit.value) if self.months_edit.value and self.months_edit.value.strip() else 0
                 days_val = int(self.days_edit.value) if self.days_edit.value and self.days_edit.value.strip() else 0
+                timestamp_val = int(self.timestamp_edit.value) if self.timestamp_edit.value and self.timestamp_edit.value.strip() else None
 
-                if months_val != 0 or days_val != 0:
+                # Use current time as base if no active scheduled removal
+                if self.subscription_details and self.subscription_details.get('removal_timestamp'):
                     current_timestamp = self.subscription_details['removal_timestamp']
-                    current_dt = datetime.fromtimestamp(current_timestamp, tz=timezone.utc)
-                    
-                    new_dt = current_dt + relativedelta(months=months_val) + timedelta(days=days_val)
-                    new_timestamp = int(new_dt.timestamp())
+                else:
+                    current_timestamp = get_unix_time()
 
-                    db.update_user_subscription(self.subscription_details['schedule_id'], new_timestamp)
-                    
+                new_timestamp = current_timestamp
+
+                if timestamp_val:
+                    new_timestamp = timestamp_val
+                    response_messages.append(f"✅ Subscription expiry set to <t:{new_timestamp}:F> (unix: `{new_timestamp}`)")
+                elif days_val != 0:
+                    current_dt = datetime.fromtimestamp(current_timestamp, tz=timezone.utc)
+                    new_dt = current_dt + timedelta(days=days_val)
+                    new_timestamp = int(new_dt.timestamp())
                     response_messages.append(f"✅ Subscription duration updated. New expiry: <t:{new_timestamp}:F>")
 
+                if new_timestamp != current_timestamp:
+                    user_id = self.transaction_data['user_id']
+                    item_details = db.get_item_by_name(self.transaction_data['item_description'])
+                    role_id = item_details.get('associated_role_id') if item_details else None
+                    if self.subscription_details and self.subscription_details.get('schedule_id'):
+                        db.update_user_subscription(self.subscription_details['schedule_id'], new_timestamp)
+                    elif role_id:
+                        db.schedule_role_removal(user_id, role_id, new_timestamp)
+                        response_messages.append("✅ Scheduled a new expiration for this subscription.")
+
+                if new_timestamp < get_unix_time() and role_id:
+                    # Remove the role immediately if the expiry is in the past
+                    guild = interaction.guild or interaction.client.get_guild(interaction.guild_id)
+                    if guild:
+                        member = guild.get_member(user_id)
+                        role = guild.get_role(role_id)
+                        if member and role and role in member.roles:
+                            try:
+                                await member.remove_roles(role, reason="Subscription expired (manual edit)")
+                                db.delete_scheduled_removal(db.get_user_subscription(user_id, role_id)['schedule_id'])
+                                db.update_transaction_for_expiry(user_id=user_id, item_name=item_details['item_name'])
+                                response_messages.append("✅ Role removed immediately due to past expiry.")
+                            except Exception as e:
+                                logger.error(f"Failed to remove expired role during edit: {e}", exc_info=True)
+        
             except ValueError:
-                response_messages.append("⚠️ Could not update duration: Invalid number format for months or days.")
+                response_messages.append("⚠️ Could not update duration: Invalid number format for days or timestamp.")
             except Exception as e:
                 logger.error(f"Error updating subscription duration during edit: {e}", exc_info=True)
-                response_messages.append("⚠️ An unexpected error occurred while updating the subscription duration.")
-        
+                response_messages.append("⚠️ An unexpected error occurred while updating the subscription duration.")        
         await interaction.response.send_message("\n".join(response_messages), ephemeral=True)
-
+                
 class StoreManagerCog(commands.Cog, name="Store Manager"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -364,6 +395,8 @@ class StoreManagerCog(commands.Cog, name="Store Manager"):
                     )
                     await self._send_dm(member, dm_embed)
 
+                    db.update_transaction_for_expiry(user_id=removal['user_id'], item_name=role.name)
+
             except Forbidden:
                 logger.error(f"Failed to remove role ID {removal['role_id']}... Missing permissions.")
             except Exception as e:
@@ -443,9 +476,10 @@ class StoreManagerCog(commands.Cog, name="Store Manager"):
                 pass 
 
             for member, timestamp in expiring_subscribers:
+                if timestamp < get_unix_time():
+                    continue  # Skip expired subscriptions
                 sub_info = db.get_transaction_by_user_and_item(member.id, item['item_name'])
                 ign = sub_info.get('ingame_name', "N/A") if sub_info else "N/A"
-                
                 line = desc_template.replace('{user.mention}', member.mention)
                 line = line.replace('{user.name}', member.display_name)
                 line = line.replace('{ingame.name}', ign)
@@ -504,6 +538,10 @@ class StoreManagerCog(commands.Cog, name="Store Manager"):
         for sub in all_active_subscriptions:
             user_id = sub['user_id']
             role_id = sub['role_id']
+
+            # Only re-apply if the scheduled removal is still in the DB and not expired
+            if sub['removal_timestamp'] < get_unix_time():
+                continue  # Skip expired subscriptions
 
             member = guild.get_member(user_id)
             role = guild.get_role(role_id)

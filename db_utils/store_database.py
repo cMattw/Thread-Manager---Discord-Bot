@@ -1,5 +1,3 @@
-# db_utils/store_database.py
-
 import sqlite3
 import os
 import logging
@@ -83,16 +81,25 @@ def initialize_database():
 # ... (The rest of the functions in this file remain the same) ...
 # --- Transaction Functions ---
 
-def add_transaction(guild_id: int, user_id: int, username_at_time: str, trans_type: str, item: str,
-                    admin_id: int, quantity: Optional[int], notes: Optional[str], ign: Optional[str],
-                    timestamp: int) -> int:
+def add_transaction(
+    guild_id: int, user_id: int, username_at_time: str, trans_type: str, item: str,
+    admin_id: int, quantity: Optional[int], notes: Optional[str], ign: Optional[str],
+    timestamp: int, duration_months: Optional[int] = None, duration_days: Optional[int] = None,
+    expires_at: Optional[int] = None, is_permanent: int = 0, expired: int = 0
+) -> int:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO transactions (guild_id, user_id, username_at_time, transaction_type, item_description,
-                                      quantity, notes, timestamp, admin_id, ingame_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (guild_id, user_id, username_at_time, trans_type, item, quantity, notes, timestamp, admin_id, ign))
+            INSERT INTO transactions (
+                guild_id, user_id, username_at_time, transaction_type, item_description,
+                quantity, notes, timestamp, admin_id, ingame_name,
+                duration_months, duration_days, expires_at, is_permanent, expired
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            guild_id, user_id, username_at_time, trans_type, item, quantity, notes, timestamp, admin_id, ign,
+            duration_months, duration_days, expires_at, is_permanent, expired
+        ))
         conn.commit()
         return cursor.lastrowid
 
@@ -242,3 +249,11 @@ def update_config(updates: Dict[str, Any]) -> bool:
         cursor = conn.execute(query, tuple(params))
         conn.commit()
         return cursor.rowcount > 0
+
+def update_transaction_for_expiry(user_id: int, item_name: str):
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE transactions SET expired = 1 WHERE user_id = ? AND item_description = ? AND expired = 0",
+            (user_id, item_name)
+        )
+        conn.commit()
