@@ -13,7 +13,7 @@
   },
   {
     "triggers": ["/suggest"],
-    "response": "To submit a suggestion, use the **</suggest:1384463135267754016>** command.",
+    "response": "To submit a suggestion, use the **</suggest:1386634400745263134>** command.",
     "case_sensitive": false,
     "match_type": "exact"
   }
