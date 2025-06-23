@@ -170,3 +170,9 @@ def remove_thread(thread_id: int):
     with get_db_connection() as conn:
         conn.execute("DELETE FROM managed_threads WHERE thread_id = ?", (str(thread_id),))
         conn.commit()
+
+def get_all_completed_threads() -> List[Dict[str, Any]]:
+    """Gets all threads that are marked as complete (for debugging purposes)."""
+    with get_db_connection() as conn:
+        rows = conn.cursor().execute("SELECT * FROM managed_threads WHERE is_complete = 1").fetchall()
+        return [dict(row) for row in rows]

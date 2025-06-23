@@ -91,19 +91,48 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
         self.config: Optional[Dict] = None
         self._cog_loaded = False
         self._target_guild_id = bot.target_guild_id
+        # Schedule the async startup logic
+        bot.loop.create_task(self._startup())
+
+    async def _startup(self):
+        await self.bot.wait_until_ready()
+        logger.info("TradeManagerCog: Running async startup.")
+        db.initialize_database(self._target_guild_id)
+        self.config = db.get_config(self._target_guild_id)
+        logger.info(f"Loaded config at startup: {self.config}")
+        forum_id = self.config.get('forum_channel_id') if self.config else None
+        if forum_id and forum_id != "None":
+            logger.info(f"Trade Manager configured for forum channel ID: {forum_id}")
+            self._cog_loaded = True
+            if not self.daily_reminder_task.is_running():
+                self.daily_reminder_task.start()
+                logger.info("Started daily_reminder_task")
+            if not self.expiration_and_deletion_task.is_running():
+                self.expiration_and_deletion_task.start()
+                logger.info("Started expiration_and_deletion_task")
+            logger.info("Trade Manager automated tasks have started.")
+        else:
+            logger.warning("Trade Manager not configured. Use `/trade_config set_channel` to begin.")
+
+        self.bot.add_view(ControlPanelView(self))
+        self.bot.add_view(ReminderView(self))
 
     async def cog_load(self):
         await self.bot.wait_until_ready()
         logger.info("TradeManagerCog: Cog is loading.")
         db.initialize_database(self._target_guild_id)
         self.config = db.get_config(self._target_guild_id)
-        if self.config and self.config.get('forum_channel_id'):
-            logger.info(f"Trade Manager configured for forum channel ID: {self.config.get('forum_channel_id')}")
+        logger.info(f"Loaded config at startup: {self.config}")
+        forum_id = self.config.get('forum_channel_id') if self.config else None
+        if forum_id and forum_id != "None":
+            logger.info(f"Trade Manager configured for forum channel ID: {forum_id}")
             self._cog_loaded = True
             if not self.daily_reminder_task.is_running():
                 self.daily_reminder_task.start()
+                logger.info("Started daily_reminder_task")
             if not self.expiration_and_deletion_task.is_running():
                 self.expiration_and_deletion_task.start()
+                logger.info("Started expiration_and_deletion_task")
             logger.info("Trade Manager automated tasks have started.")
         else:
             logger.warning("Trade Manager not configured. Use `/trade_config set_channel` to begin.")
@@ -121,12 +150,16 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
             await interaction.response.send_message("The Trade Manager cog is not configured. An admin must set the trades channel first.", ephemeral=True)
             return False
         return True
-
+    
+    def refresh_config(self):
+        """Always fetch the latest config from the database."""
+        db.initialize_database(self._target_guild_id)
+        self.config = db.get_config(self._target_guild_id)
+        return self.config
+    
     @commands.Cog.listener()
     async def on_thread_create(self, thread: Thread):
-        # FIX: Make this event handler stateless and resilient to startup issues.
-        # It now fetches the config directly from the DB every time.
-        
+
         if thread.guild.id != self._target_guild_id:
             return
 
@@ -206,88 +239,209 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
             logger.error(f"Failed to edit control panel message in thread {thread.id}: {e}", exc_info=True)
             await thread.send(f"**Trade Complete!** This post is now locked and will be automatically deleted <t:{deletion_unix}:R>.")
 
-    @tasks.loop(hours=24)
-    async def daily_reminder_task(self):
-        logger.info("Task: Running daily reminder check for active trades.")
-        active_threads = db.get_all_active_threads()
-        guild = self.bot.get_guild(self._target_guild_id)
-        if not guild: return
-
-        for trade in active_threads:
-            last_sent_ts = trade.get('last_reminder_sent_timestamp')
-            if last_sent_ts and (get_unix_time() - last_sent_ts) < (23 * 3600):
-                continue
-
-            thread = self.bot.get_channel(int(trade['thread_id']))
-            if not isinstance(thread, Thread) or thread.archived or thread.locked: continue
-
-            op = guild.get_member(int(trade['op_id']))
-            if not op: continue
-
-            last_msg_id = trade.get('last_reminder_message_id')
-            if last_msg_id:
-                try:
-                    old_msg = thread.get_partial_message(int(last_msg_id))
-                    await old_msg.delete()
-                except nextcord.NotFound: pass
-                except Exception as e: logger.warning(f"Could not delete old reminder message {last_msg_id}: {e}")
-
-            try:
-                view = ReminderView(self)
-                reminder_msg = await thread.send(
-                    content=f"{op.mention}, is this trade still active? Please mark it as complete if it's done.",
-                    view=view
-                )
-                db.update_thread_reminder_info(thread.id, reminder_msg.id, get_unix_time())
-            except Exception as e:
-                logger.error(f"Failed to send daily reminder to thread {thread.id}: {e}", exc_info=True)
-            
-            await asyncio.sleep(2)
-
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=1)
     async def expiration_and_deletion_task(self):
-        now_unix = get_unix_time()
-        active_threads = db.get_all_active_threads()
-        guild = self.bot.get_guild(self._target_guild_id)
-        if not guild: return
-
-        for trade in active_threads:
-            thread = self.bot.get_channel(int(trade['thread_id']))
-            if not isinstance(thread, Thread) or thread.archived or thread.locked: continue
+        self.refresh_config()
+        forum_id = self.config.get('forum_channel_id') if self.config else None
+        if not forum_id or forum_id == "None":
+            logger.warning("Config missing or forum_channel_id not set. Skipping expiration_and_deletion_task.")
+            return
+        """Enhanced task with better logging and error handling"""
+        logger.info("=== STARTING expiration_and_deletion_task ===")
+        
+        try:
+            now_unix = get_unix_time()
+            logger.info(f"Current Unix timestamp: {now_unix}")
             
-            op = guild.get_member(int(trade['op_id']))
-            if not op: continue
+            guild = self.bot.get_guild(self._target_guild_id)
+            if not guild: 
+                logger.error(f"Could not find target guild {self._target_guild_id} for expiration task")
+                return
+
+            logger.info(f"Processing tasks for guild: {guild.name} (ID: {guild.id})")
+
+            # FIRST: Handle deletion of completed trades (HIGH PRIORITY)
+            logger.info("--- CHECKING FOR THREADS TO DELETE ---")
+            threads_to_delete = db.get_threads_for_deletion(now_unix)
+            logger.info(f"Found {len(threads_to_delete)} threads scheduled for deletion")
             
-            last_sent_ts = trade.get('last_reminder_sent_timestamp')
-            if last_sent_ts and (now_unix - last_sent_ts) > (12 * 3600):
-                logger.info(f"Task: Thread {thread.id} inactive for >12h after reminder. Closing.")
-                await thread.edit(locked=True)
-                deletion_ts = get_unix_time(offset_seconds=3600)
-                await thread.send(f"{op.mention}, this post is being closed due to inactivity after a reminder. It will be automatically deleted <t:{deletion_ts}:R>.")
-                db.set_thread_deletion_time(thread.id, deletion_ts)
-                continue
+            if threads_to_delete:
+                for trade in threads_to_delete:
+                    thread_id = trade['thread_id']
+                    deletion_ts = trade.get('deletion_timestamp')
+                    logger.info(f"Processing thread {thread_id} for deletion (scheduled for {deletion_ts}, current: {now_unix})")
+                    
+                    thread = self.bot.get_channel(int(thread_id))
+                    if thread:
+                        logger.info(f"Found thread '{thread.name}' (ID: {thread.id}), attempting deletion...")
+                        try:
+                            await thread.delete()
+                            logger.info(f"✅ Successfully deleted thread {thread.id}")
+                        except nextcord.Forbidden as e:
+                            logger.error(f"❌ Missing permissions to delete thread {thread.id}: {e}")
+                            logger.error("Bot needs 'Manage Threads' permission in the forum channel!")
+                        except nextcord.NotFound as e:
+                            logger.warning(f"⚠️ Thread {thread.id} was already deleted or not found: {e}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to delete thread {thread.id}: {e}", exc_info=True)
+                    else:
+                        logger.warning(f"⚠️ Thread {thread_id} not found in cache, removing from database")
+                    
+                    # Always remove from database whether deletion succeeded or not
+                    try:
+                        db.remove_thread(thread_id)
+                        logger.info(f"Removed thread {thread_id} from database")
+                    except Exception as e:
+                        logger.error(f"Failed to remove thread {thread_id} from database: {e}")
+                    
+                    await asyncio.sleep(1)  # Rate limiting
+            else:
+                logger.info("No threads scheduled for deletion at this time")
 
-            creation_ts = trade['creation_timestamp']
-            if (now_unix - creation_ts) > (7 * 24 * 3600):
-                logger.info(f"Task: Thread {thread.id} reached 7-day lifetime limit. Closing.")
-                await thread.edit(locked=True)
-                deletion_ts = get_unix_time(offset_seconds=3600)
-                await thread.send(f"{op.mention}, your trade post has been active for one week and will be automatically closed to keep the forum clean. It will be deleted <t:{deletion_ts}:R>. Please create a new post if still needed.")
-                db.set_thread_deletion_time(thread.id, deletion_ts)
-                continue
+            # SECOND: Handle active thread management (inactivity and expiration)
+            logger.info("--- CHECKING ACTIVE THREADS FOR INACTIVITY/EXPIRATION ---")
+            active_threads = db.get_all_active_threads()
+            logger.info(f"Found {len(active_threads)} active threads to check")
+            
+            processed_count = 0
+            for trade in active_threads:
+                thread_id = trade['thread_id']
+                logger.debug(f"Checking active thread {thread_id}")
+                
+                thread = self.bot.get_channel(int(thread_id))
+                if not isinstance(thread, Thread):
+                    logger.warning(f"Thread {thread_id} not found or not a Thread, removing from database")
+                    try:
+                        db.remove_thread(thread_id)
+                    except Exception as e:
+                        logger.error(f"Failed to remove invalid thread {thread_id}: {e}")
+                    continue
+                    
+                if thread.archived:
+                    logger.debug(f"Skipping archived thread {thread.id}")
+                    continue
+                    
+                if thread.locked:
+                    logger.debug(f"Skipping locked thread {thread.id}")
+                    continue
+                
+                op = guild.get_member(int(trade['op_id']))
+                if not op:
+                    logger.warning(f"Original poster {trade['op_id']} not found for thread {thread.id}")
+                    continue
+                
+                # Check for inactivity after reminder (12 hours)
+                last_sent_ts = trade.get('last_reminder_sent_timestamp')
+                if last_sent_ts and (now_unix - last_sent_ts) > (12 * 3600):
+                    logger.info(f"🔒 Thread {thread.id} inactive for >12h after reminder. Closing.")
+                    try:
+                        await thread.edit(locked=True)
+                        deletion_ts = get_unix_time(offset_seconds=3600)  # Delete in 1 hour
+                        await thread.send(f"{op.mention}, this post is being closed due to inactivity after a reminder. It will be automatically deleted <t:{deletion_ts}:R>.")
+                        db.set_thread_deletion_time(thread.id, deletion_ts)
+                        logger.info(f"Thread {thread.id} marked for deletion at {deletion_ts}")
+                        processed_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to close inactive thread {thread.id}: {e}", exc_info=True)
+                    continue
 
-        threads_to_delete = db.get_threads_for_deletion(now_unix)
-        for trade in threads_to_delete:
-            thread = self.bot.get_channel(int(trade['thread_id']))
-            if thread:
-                logger.info(f"Task: Deleting thread '{thread.name}' (ID: {thread.id}) as scheduled.")
+                # Check for 7-day lifetime limit
+                creation_ts = trade['creation_timestamp']
+                age_days = (now_unix - creation_ts) / (24 * 3600)
+                if age_days > 7:
+                    logger.info(f"⏰ Thread {thread.id} reached 7-day lifetime limit (age: {age_days:.1f} days). Closing.")
+                    try:
+                        await thread.edit(locked=True)
+                        deletion_ts = get_unix_time(offset_seconds=3600)  # Delete in 1 hour
+                        await thread.send(f"{op.mention}, your trade post has been active for one week and will be automatically closed to keep the forum clean. It will be deleted <t:{deletion_ts}:R>. Please create a new post if still needed.")
+                        db.set_thread_deletion_time(thread.id, deletion_ts)
+                        logger.info(f"Thread {thread.id} marked for deletion at {deletion_ts}")
+                        processed_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to close expired thread {thread.id}: {e}", exc_info=True)
+                    continue
+
+            logger.info(f"Processed {processed_count} threads for closure/expiration")
+            logger.info("=== COMPLETED expiration_and_deletion_task ===")
+            
+        except Exception as e:
+            logger.error(f"Critical error in expiration_and_deletion_task: {e}", exc_info=True)
+
+    @tasks.loop(hours=1)
+    async def daily_reminder_task(self):
+        self.refresh_config()
+        forum_id = self.config.get('forum_channel_id') if self.config else None
+        if not forum_id or forum_id == "None":
+            logger.warning("Config missing or forum_channel_id not set. Skipping expiration_and_deletion_task.")
+            return
+        logger.info("=== STARTING daily_reminder_task ===")
+        
+        try:
+            # Ensure config is loaded
+            if self.config is None:
+                logger.warning("Config not loaded in daily_reminder_task, attempting to load...")
+                db.initialize_database(self._target_guild_id)
+                self.config = db.get_config(self._target_guild_id)
+                if self.config is None:
+                    logger.error("Failed to load config in daily_reminder_task")
+                    return
+            
+            logger.info("Running daily reminder check for active trades.")
+            active_threads = db.get_all_active_threads()
+            logger.info(f"Found {len(active_threads)} active threads to check for reminders")
+            
+            guild = self.bot.get_guild(self._target_guild_id)
+            if not guild: 
+                logger.error(f"Could not find guild {self._target_guild_id}")
+                return
+
+            reminder_count = 0
+            for trade in active_threads:
+                last_sent_ts = trade.get('last_reminder_sent_timestamp')
+                if last_sent_ts and (get_unix_time() - last_sent_ts) < (23 * 3600):
+                    logger.debug(f"Thread {trade['thread_id']} reminder sent recently, skipping")
+                    continue
+
+                thread = self.bot.get_channel(int(trade['thread_id']))
+                if not isinstance(thread, Thread) or thread.archived or thread.locked: 
+                    logger.debug(f"Thread {trade['thread_id']} is not available for reminders")
+                    continue
+
+                op = guild.get_member(int(trade['op_id']))
+                if not op: 
+                    logger.warning(f"Could not find OP {trade['op_id']} for thread {trade['thread_id']}")
+                    continue
+
+                last_msg_id = trade.get('last_reminder_message_id')
+                if last_msg_id:
+                    try:
+                        old_msg = thread.get_partial_message(int(last_msg_id))
+                        await old_msg.delete()
+                        logger.debug(f"Deleted old reminder message {last_msg_id}")
+                    except nextcord.NotFound: 
+                        pass
+                    except Exception as e: 
+                        logger.warning(f"Could not delete old reminder message {last_msg_id}: {e}")
+
                 try:
-                    await thread.delete()
+                    view = ReminderView(self)
+                    reminder_msg = await thread.send(
+                        content=f"{op.mention}, is this trade still active? Please mark it as complete if it's done.",
+                        view=view
+                    )
+                    db.update_thread_reminder_info(thread.id, reminder_msg.id, get_unix_time())
+                    logger.info(f"Sent reminder to thread {thread.id}")
+                    reminder_count += 1
                 except Exception as e:
-                    logger.error(f"Failed to delete thread {thread.id}: {e}")
+                    logger.error(f"Failed to send daily reminder to thread {thread.id}: {e}", exc_info=True)
+                
+                await asyncio.sleep(2)
+
+            logger.info(f"Sent {reminder_count} reminders")
+            logger.info("=== COMPLETED daily_reminder_task ===")
             
-            db.remove_thread(trade['thread_id'])
-            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Critical error in daily_reminder_task: {e}", exc_info=True)
 
     @daily_reminder_task.before_loop
     @expiration_and_deletion_task.before_loop
@@ -366,7 +520,7 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
         await interaction.response.send_message(f"✅ Trade Manager will now manage new posts in {channel.mention}.", ephemeral=True)
 
     @trade_config_group.subcommand(name="set_delete_delay", description="Sets the delay (hours) for deleting a user-completed post.")
-    async def set_delete_delay(self, interaction: Interaction, hours: int = SlashOption(description="Hours to wait before deleting a completed trade (e.g., 24).", min_value=0, required=True)):
+    async def set_delete_delay(self, interaction: Interaction, hours: float = SlashOption(description="Hours to wait before deleting a completed trade (e.g., 24).", min_value=0, required=True)):
         db.initialize_database(self._target_guild_id)
         db.update_config(self._target_guild_id, {"deletion_delay_hours": hours})
         self.config = db.get_config(self._target_guild_id)
