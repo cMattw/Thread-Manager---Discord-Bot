@@ -10,5 +10,11 @@
     "response": "{loaded_cogs_list}",
     "case_sensitive": false,
     "match_type": "exact"
+  },
+  {
+    "triggers": ["/suggest"],
+    "response": "To submit a suggestion, use the **</suggest:1384463135267754016>** command.",
+    "case_sensitive": false,
+    "match_type": "exact"
   }
 ]
