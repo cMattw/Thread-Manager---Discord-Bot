@@ -166,10 +166,17 @@ class SubscriptionModal(ui.Modal):
 
             cmd_options = {opt['name']: opt['value'] for opt in self.parent_interaction.data['options'][0]['options']}
             db.add_transaction(
-                guild_id=self.parent_interaction.guild.id, user_id=target_user.id, username_at_time=str(target_user),
-                trans_type=cmd_options['type'], item=self.item_name, admin_id=interaction.user.id,
-                quantity=cmd_options.get('quantity'), notes=cmd_options.get('notes'), ign=self.ign.value,
-                timestamp=get_unix_time()
+                guild_id=self.parent_interaction.guild.id,
+                user_id=target_user.id,
+                username_at_time=str(target_user),
+                trans_type=cmd_options['type'],
+                item=self.item_name,
+                admin_id=interaction.user.id,
+                quantity=cmd_options.get('quantity'),
+                notes=cmd_options.get('notes'),
+                ign=self.ign.value,
+                timestamp=get_unix_time(),
+                is_permanent=1
             )
 
             try:
