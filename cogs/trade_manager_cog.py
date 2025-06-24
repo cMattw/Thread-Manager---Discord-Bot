@@ -174,6 +174,15 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
 
         logger.info(f"New trade post detected in configured forum: '{thread.name}' (ID: {thread.id}) by {thread.owner.display_name}")
 
+        author_has_message = False
+        async for msg in thread.history(limit=5, oldest_first=True):
+            if msg.author.id == thread.owner_id:
+                author_has_message = True
+                break
+        if not author_has_message:
+            logger.info(f"Not sending control panel to thread {thread.id} yet: waiting for author to send a message.")
+            return
+        
         creation_unix = int(thread.created_at.timestamp())
         db.add_managed_thread(thread.id, thread.owner_id, thread.guild.id, creation_unix)
 
@@ -452,6 +461,54 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
     @expiration_and_deletion_task.before_loop
     async def before_tasks(self):
         await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: nextcord.Message):
+        # Only care about forum threads in the target guild
+        if not isinstance(message.channel, Thread):
+            return
+        thread = message.channel
+        if thread.guild.id != self._target_guild_id:
+            return
+
+        config = db.get_config(self._target_guild_id)
+        if not config or not config.get('forum_channel_id'):
+            return
+        forum_channel_id = config.get('forum_channel_id')
+        if thread.parent_id != int(forum_channel_id):
+            return
+
+        # Only act if the message is from the thread owner
+        if message.author.id != thread.owner_id:
+            return
+
+        # Only send if the bot hasn't already sent the control panel
+        already_sent = False
+        async for msg in thread.history(limit=10, oldest_first=True):
+            if msg.author.id == self.bot.user.id and msg.embeds:
+                already_sent = True
+                break
+        if already_sent:
+            return
+
+        # Send the control panel
+        tag_names = [tag.name for tag in thread.applied_tags]
+        tag_display = f"`{', '.join(tag_names)}`" if tag_names else "None"
+        embed = Embed(
+            title="Trade Management Panel",
+            description=f"Welcome, {thread.owner.mention}! Your trade post is now active.\n\n"
+                        f"The tags you selected are: {tag_display}.\n\n"
+                        f"Use the button below when your trade is complete. I will send a reminder here every 24 hours.",
+            color=Color.blue()
+        )
+        embed.set_footer(text="This panel helps keep the trade channel clean.")
+
+        try:
+            view = ControlPanelView(self)
+            await thread.send(embed=embed, view=view)
+            logger.info(f"Sent control panel to thread {thread.id} after first author message.")
+        except Exception as e:
+            logger.error(f"Failed to send control panel to thread {thread.id} after first author message: {e}", exc_info=True)
 
     @nextcord.slash_command(name="trades", description="Manage your active trade posts.")
     async def trades_group(self, interaction: Interaction): pass
