@@ -434,12 +434,12 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
 
                 try:
                     # Calculate when the thread would be deleted if inactive after reminder (12 hours + 1 hour grace)
-                    deletion_unix = get_unix_time(offset_seconds=(12 + 1) * 3600)
+                    deletion_unix = get_unix_time(offset_seconds=(12) * 3600)
                     view = ReminderView(self)
                     reminder_msg = await thread.send(
                         content=(
                             f"{op.mention}, is this trade still active? Please mark it as complete if it's done.\n"
-                            f"-# **If there is no response, this post will be automatically locked and deleted <t:{deletion_unix}:R>.**"
+                            f"-# If there is no response, this post will be automatically **locked <t:{deletion_unix}:R>.**"
                         ),
                         view=view
                     )
