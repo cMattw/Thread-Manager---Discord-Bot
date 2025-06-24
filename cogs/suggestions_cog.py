@@ -191,8 +191,15 @@ class SuggestionView(ui.View):
             if not is_anonymous:
                 db.add_suggestion(new_thread.id, interaction.user.id, interaction.guild.id)
 
-            if self.selected_tags:
-                await new_thread.edit(applied_tags=self.selected_tags)
+            # --- Add Pending Tag ---
+            pending_tag_id = self.config.get("pending_tag_id")
+            tags_to_apply = list(self.selected_tags) if self.selected_tags else []
+            if pending_tag_id:
+                pending_tag = forum_channel.get_tag(int(pending_tag_id))
+                if pending_tag and pending_tag not in tags_to_apply:
+                    tags_to_apply.append(pending_tag)
+            if tags_to_apply:
+                await new_thread.edit(applied_tags=tags_to_apply)
 
             await self.original_interaction.followup.send(f"✅ Your suggestion has been posted! View it here: {new_thread.jump_url}", ephemeral=True)
         except Exception as e:
@@ -262,7 +269,9 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
         status_tag_ids = [
             config.get('planned_tag_id'), config.get('implemented_tag_id'), config.get('denied_tag_id')
         ]
-        new_tags = [tag for tag in current_tags if str(tag.id) not in status_tag_ids]
+        # --- Remove Pending Tag if present ---
+        pending_tag_id = config.get('pending_tag_id')
+        new_tags = [tag for tag in current_tags if str(tag.id) not in status_tag_ids and (not pending_tag_id or str(tag.id) != pending_tag_id)]
         new_tags.append(target_tag)
         
         status_colors = { "Planned": Color.gold(), "Implemented": Color.green(), "Denied": Color.red() }
@@ -317,7 +326,7 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
     @config_group.subcommand(name="set_status_tag", description="Assign a tag to a suggestion status.")
     @application_checks.has_permissions(manage_guild=True)
     async def set_status_tag(self, interaction: Interaction,
-        status: str = SlashOption(name="status", choices=["Planned", "Implemented", "Denied"], required=True),
+        status: str = SlashOption(name="status", choices=["Pending", "Planned", "Implemented", "Denied"], required=True),
         tag_name: str = SlashOption(name="tag_name", description="The exact name of the tag to associate with this status.", required=True)):
         
         await interaction.response.defer(ephemeral=True)

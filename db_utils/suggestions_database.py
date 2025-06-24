@@ -58,6 +58,7 @@ def initialize_database(guild_id: int):
             "planned_tag_id": "TEXT",
             "implemented_tag_id": "TEXT",
             "denied_tag_id": "TEXT",
+            "pending_tag_id": "TEXT",
             "planned_message": "TEXT DEFAULT 'This suggestion has been marked as **Planned**.'",
             "implemented_message": "TEXT DEFAULT 'This suggestion has been **Implemented**.'",
             "denied_message": "TEXT DEFAULT 'This suggestion has been **Denied**.'",
