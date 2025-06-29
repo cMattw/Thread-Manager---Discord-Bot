@@ -70,14 +70,15 @@ class ReminderView(ui.View):
         
         await interaction.response.defer(ephemeral=True)
 
-        db.update_thread_reminder_info(thread.id, None, get_unix_time())
+        # Clear ALL reminder info to reset the inactivity timer completely
+        db.clear_thread_reminder_info(thread.id)
         try:
             await interaction.message.delete()
         except nextcord.NotFound:
             pass
             
         await interaction.followup.send("Thanks for the update! I've reset the inactivity timer.", ephemeral=True)
-
+        
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -341,7 +342,9 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
                 
                 # Check for inactivity after reminder (12 hours)
                 last_sent_ts = trade.get('last_reminder_sent_timestamp')
-                if last_sent_ts and (now_unix - last_sent_ts) > (12 * 3600):
+                last_msg_id = trade.get('last_reminder_message_id')
+                # Only close if both conditions are met: reminder was sent AND it's been 12+ hours AND message still exists
+                if last_sent_ts and last_msg_id and (now_unix - last_sent_ts) > (12 * 3600):
                     logger.info(f"🔒 Thread {thread.id} inactive for >12h after reminder. Closing.")
                     try:
                         await thread.edit(locked=True)
