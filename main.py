@@ -70,7 +70,8 @@ INITIAL_EXTENSIONS = [
     'cogs.trade_manager_cog',
     'cogs.recruitment_forum_cog',
     'cogs.store_manager_cog',
-    'cogs.activity_checker_cog'
+    'cogs.activity_checker_cog',
+    'cogs.auto_reaction_cog',
 ]
 
 @bot.event
