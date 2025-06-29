@@ -79,6 +79,10 @@ async def on_ready():
     logging.info(f"Logged in as {bot.user.name} (ID: {bot.user.id})")
     logging.info(f"Nextcord Version: {nextcord.__version__}")
 
+    from cogs.ticket_manager_cog import InactiveTicketView
+    bot.add_view(InactiveTicketView())
+    logging.info("Registered persistent views on bot ready")
+
     if not bot.guilds:
         logging.error("CRITICAL: Bot is not in any servers!")
         return

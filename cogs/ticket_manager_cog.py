@@ -14,7 +14,7 @@ CLOSED_PHRASE = "This ticket has been closed"
 DEFAULT_SCAN_INTERVAL_MINUTES = 60
 DEFAULT_DELETE_DELAY_DAYS = 7 
 MANILA_TZ = pytz.timezone("Asia/Manila")
-INACTIVE_DAYS_THRESHOLD = 0
+INACTIVE_DAYS_THRESHOLD = 3
 INACTIVE_CHECK_INTERVAL_HOURS = 1
 
 class InactiveTicketView(View):
@@ -73,11 +73,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
         self.bot = bot
         self.check_archived_threads_task.start()
         self.check_inactive_tickets_task.start()
-
-    async def cog_load(self):
-        # Register persistent view after event loop is running
-        self.bot.add_view(InactiveTicketView())
-        logging.info("Registered InactiveTicketView as persistent view.")
 
     def cog_unload(self):
         self.check_archived_threads_task.cancel()
