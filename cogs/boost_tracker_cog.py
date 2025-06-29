@@ -102,46 +102,31 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             # Increment the boost count by 1 for this event
             db.increment_boost_count(str(booster.id), 1)
 
-            # --- Send Announcement ---
+            # --- Send Welcome Message for New Boost ---
             config = db.get_config(str(message.guild.id))
             webhook_url = config.get("booster_announcement_webhook_url")
-            template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
+            template = config.get("welcome_message_template", "Thank you {mention} for boosting {server}! 🚀")
 
-            # Determine the current milestone (months boosted)
-            booster_data = db.get_booster(str(booster.id))
-            milestone = 1  # Default to 1 for a new boost
-            if booster_data and booster_data.get('current_boost_start_timestamp'):
-                now = datetime.now(timezone.utc)
-                boost_start = datetime.fromtimestamp(booster_data['current_boost_start_timestamp'], tz=timezone.utc)
-                milestone = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
-                if now.day < boost_start.day:
-                    milestone -= 1
-                milestone = max(1, milestone)
-            template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
-            month_label = "month" if milestone == 1 else "months"
             content = template.format(
                 mention=booster.mention,
                 user=booster.name,
-                server=message.guild.name,
-                months=milestone,
-                month_label=month_label
-                )
+                server=message.guild.name
+            )
+            
             if webhook_url:
-                logger.info(f"Attempting to send anniversary message via webhook: {webhook_url}")
+                logger.info(f"Attempting to send welcome message via webhook: {webhook_url}")
                 async with aiohttp.ClientSession() as session:
                     try:
                         webhook = Webhook.from_url(webhook_url, session=session)
                         await webhook.send(content)
-                        sent_announcements += 1
-                        logger.info("Anniversary message sent via webhook.")
+                        logger.info("Welcome message sent via webhook.")
                     except Exception as e:
-                        logger.error(f"Failed to send anniversary webhook: {e}")
+                        logger.error(f"Failed to send welcome webhook: {e}")
             else:
                 channel_id = config.get("announcement_channel_id")
                 if channel_id and (channel := self.bot.get_channel(int(channel_id))):
                     await channel.send(content)
-                    sent_announcements += 1
-                    logger.info("Anniversary message sent via fallback channel.")
+                    logger.info("Welcome message sent via fallback channel.")
 
     # --- TASKS ---
 
@@ -207,6 +192,10 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             if now.day < boost_start.day:
                 months_boosted -= 1
 
+            # Skip if less than 1 month
+            if months_boosted < 1:
+                continue
+
             member = guild.get_member(int(user_id))
             if not member:
                 try:
@@ -215,46 +204,47 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
                     logger.warning(f"Could not fetch member {user_id}")
                     continue
 
+            # Check if we need to send anniversary message
+            last_notified = booster_data.get('last_anniversary_notified', 0)
+            if months_boosted > last_notified:
+                # Send anniversary message
+                template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
+                month_label = "month" if months_boosted == 1 else "months"
+                content = template.format(
+                    mention=member.mention,
+                    user=member.name,
+                    server=guild.name,
+                    months=months_boosted,
+                    month_label=month_label
+                )
+                
+                webhook_url = config.get("booster_announcement_webhook_url")
+                if webhook_url:
+                    logger.info(f"Attempting to send anniversary message via webhook for {member.name}")
+                    async with aiohttp.ClientSession() as session:
+                        try:
+                            webhook = Webhook.from_url(webhook_url, session=session)
+                            await webhook.send(content)
+                            logger.info("Anniversary message sent via webhook.")
+                        except Exception as e:
+                            logger.error(f"Failed to send anniversary webhook: {e}")
+                else:
+                    channel_id = config.get("announcement_channel_id")
+                    if channel_id and (channel := self.bot.get_channel(int(channel_id))):
+                        await channel.send(content)
+                        logger.info("Anniversary message sent via fallback channel.")
+                
+                # Update the last notified milestone
+                db.update_anniversary_notified(user_id, months_boosted)
+
+            # Assign roles
             for reward in reward_roles:
                 milestone = reward['duration_months']
                 role = guild.get_role(int(reward['role_id']))
                 if not role:
                     logger.warning(f"Role ID {reward['role_id']} not found in guild.")
                     continue
-                logger.info(f"User {member} ({user_id}): months_boosted={months_boosted}, milestone={milestone}, has_role={role in member.roles}")
-                if months_boosted >= milestone and role not in member.roles:
-                    try:
-                        await member.add_roles(role, reason=f"Reached {milestone} months of boosting.")
-                        assigned_roles += 1
-                        logger.info(f"Gave {role.name} to {member.display_name} for {months_boosted} months of boosting.")
-                    except Exception as e:
-                        logger.error(f"Failed to assign role to {member.display_name}: {e}")                        
-
-        reward_roles = db.get_all_reward_roles()  # List of dicts: {'duration_months': int, 'role_id': str}
-        if not reward_roles:
-            logger.info("No reward roles configured.")
-            return
-
-        for booster_data in active_boosters:
-            user_id = str(booster_data['user_id'])
-            start_ts = booster_data.get('current_boost_start_timestamp')
-            if not start_ts:
-                continue
-
-            boost_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
-            months_boosted = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
-            if now.day < boost_start.day:
-                months_boosted -= 1
-
-            member = guild.get_member(int(user_id))
-            if not member:
-                continue
-
-            for reward in reward_roles:
-                milestone = reward['duration_months']
-                role = guild.get_role(int(reward['role_id']))
-                if not role:
-                    continue
+                
                 if months_boosted >= milestone and role not in member.roles:
                     try:
                         await member.add_roles(role, reason=f"Reached {milestone} months of boosting.")
