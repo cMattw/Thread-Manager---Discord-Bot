@@ -3,6 +3,7 @@ import logging
 from typing import Optional, List, Tuple, Dict, Any, Set 
 from datetime import datetime, timezone 
 import os 
+import json
 
 DEV_DATA_DIRECTORY = "/home/mattw/Projects/discord_ticket_manager/data/" # Your local development data directory
 PROD_DATA_DIRECTORY = "/home/container/data/"    # Container data directory
@@ -115,6 +116,21 @@ def initialize_database(): # Initializes tables in the main database
             FOREIGN KEY (guild_id) REFERENCES settings(guild_id) ON DELETE CASCADE ON UPDATE CASCADE )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS inactive_ticket_settings (
+            channel_id INTEGER PRIMARY KEY,
+            settings TEXT NOT NULL
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS thread_data (
+            thread_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (thread_id, key)
+        )
+    ''')
     conn.commit() 
     conn.close()
     logging.info(f"Main Database '{DATABASE_MAIN_NAME}' initialized (all tables checked/created).")
@@ -369,6 +385,65 @@ def get_all_saved_webhooks(guild_id: int) -> List[Dict[str, Any]]:
     finally: conn.close()
     return webhooks
 
+def get_inactive_ticket_settings(channel_id: int) -> Optional[Dict]:
+    """Get inactive ticket notification settings for a channel"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT settings FROM inactive_ticket_settings WHERE channel_id = ?",
+            (channel_id,)
+        )
+        result = cursor.fetchone()
+        if result:
+            return json.loads(result[0])
+        return None
+    except Exception as e:
+        logging.error(f"Error getting inactive ticket settings for channel {channel_id}: {e}")
+        return None
+
+def set_inactive_ticket_settings(channel_id: int, settings: Dict):
+    """Set inactive ticket notification settings for a channel"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """INSERT OR REPLACE INTO inactive_ticket_settings 
+               (channel_id, settings) VALUES (?, ?)""",
+            (channel_id, json.dumps(settings))
+        )
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Error setting inactive ticket settings for channel {channel_id}: {e}")
+
+def get_thread_data(thread_id: int, key: str) -> Optional[str]:
+    """Get thread-specific data by key"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT value FROM thread_data WHERE thread_id = ? AND key = ?",
+            (thread_id, key)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else None
+    except Exception as e:
+        logging.error(f"Error getting thread data for {thread_id}, key {key}: {e}")
+        return None
+
+def set_thread_data(thread_id: int, key: str, value: str):
+    """Set thread-specific data by key"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """INSERT OR REPLACE INTO thread_data 
+               (thread_id, key, value) VALUES (?, ?, ?)""",
+            (thread_id, key, value)
+        )
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Error setting thread data for {thread_id}, key {key}: {e}")
 
 if __name__ == '__main__':
     print("Running MAIN database module directly for initialization/testing...")

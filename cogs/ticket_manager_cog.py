@@ -1,6 +1,7 @@
 import nextcord
 from nextcord.ext import commands, tasks, application_checks
-from nextcord import Interaction, SlashOption, Thread, TextChannel, ForumChannel, Color 
+from nextcord import Interaction, SlashOption, Thread, TextChannel, ForumChannel, Color, ButtonStyle
+from nextcord.ui import View, Button
 from db_utils import database
 import logging
 from datetime import datetime, timedelta, timezone
@@ -13,14 +14,74 @@ CLOSED_PHRASE = "This ticket has been closed"
 DEFAULT_SCAN_INTERVAL_MINUTES = 60
 DEFAULT_DELETE_DELAY_DAYS = 7 
 MANILA_TZ = pytz.timezone("Asia/Manila")
+INACTIVE_DAYS_THRESHOLD = 0
+INACTIVE_CHECK_INTERVAL_HOURS = 1
+
+class InactiveTicketView(View):
+    def __init__(self):
+        super().__init__(timeout=None)  # Persistent view
+
+    @nextcord.ui.button(label="Notify Support", style=ButtonStyle.green, emoji="🔔", custom_id="inactive_notify_support")
+    async def notify_support(self, button: Button, interaction: Interaction):
+        # Get the thread and settings from the context
+        thread = interaction.channel
+        if not isinstance(thread, nextcord.Thread):
+            await interaction.response.send_message("This button can only be used in a ticket thread.", ephemeral=True)
+            return
+
+        # Fetch settings from your database
+        settings = database.get_inactive_ticket_settings(thread.parent_id)
+        if not settings:
+            await interaction.response.send_message("No inactive notification settings found for this channel.", ephemeral=True)
+            return
+
+        # Determine the ticket owner (repeat your logic here)
+        thread_owner = None
+        async for message in thread.history(limit=10, oldest_first=True):
+            if message.mentions:
+                thread_owner = message.mentions[0]
+                break
+        if not thread_owner:
+            # Fallback: extract from thread name, etc.
+            pass  # (repeat your fallback logic here)
+
+        if interaction.user.id != (thread_owner.id if thread_owner else None):
+            await interaction.response.send_message("Only the ticket owner can use this button.", ephemeral=True)
+            return
+
+        staff_mentions = []
+        for role_id in settings.get('staff_roles', []):
+            role = interaction.guild.get_role(role_id)
+            if role:
+                staff_mentions.append(role.mention)
+        if not staff_mentions:
+            await interaction.response.send_message("No valid staff roles configured for this channel.", ephemeral=True)
+            return
+
+        staff_ping = " ".join(staff_mentions)
+        custom_message = settings.get('notification_message', "has notified you about this inactive ticket.")
+        await interaction.response.send_message(
+            f"{staff_ping}, {interaction.user.mention} {custom_message}"
+        )
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
 
 class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
     def __init__(self, bot: commands.Bot): 
         self.bot = bot
         self.check_archived_threads_task.start()
+        self.check_inactive_tickets_task.start()
+
+    async def cog_load(self):
+        # Register persistent view after event loop is running
+        self.bot.add_view(InactiveTicketView())
+        logging.info("Registered InactiveTicketView as persistent view.")
 
     def cog_unload(self):
         self.check_archived_threads_task.cancel()
+        self.check_inactive_tickets_task.cancel()
 
     async def _log_action(self, guild_id: int, action_title: str, 
                           thread_obj: Optional[nextcord.Thread] = None, 
@@ -266,6 +327,180 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
         # database.initialize_database() is already called in main.py's on_ready.
         logging.info("TicketManagerCog: Bot is ready. Task loop for check_archived_threads_task will now begin its iterations.")
 
+    async def _get_inactive_ticket_settings(self, channel_id: int) -> Optional[Dict]:
+        """Get inactive ticket notification settings for a specific channel"""
+        return database.get_inactive_ticket_settings(channel_id)
+
+    async def _check_thread_inactivity(self, thread: Thread, guild_id: int) -> bool:
+        """Check if a thread has been inactive for the threshold period"""
+        try:
+            # Get the last message in the thread
+            async for message in thread.history(limit=1):
+                last_message_time = message.created_at
+                if last_message_time.tzinfo is None:
+                    last_message_time = last_message_time.replace(tzinfo=timezone.utc)
+                
+                time_since_last = datetime.now(timezone.utc) - last_message_time
+                return time_since_last.days >= INACTIVE_DAYS_THRESHOLD
+            
+            # If no messages found, check thread creation time
+            thread_created = thread.created_at
+            if thread_created.tzinfo is None:
+                thread_created = thread_created.replace(tzinfo=timezone.utc)
+            
+            time_since_created = datetime.now(timezone.utc) - thread_created
+            return time_since_created.days >= INACTIVE_DAYS_THRESHOLD
+            
+        except Exception as e:
+            logging.error(f"Error checking thread inactivity for {thread.name}: {e}")
+            return False
+
+    async def _send_inactive_notification(self, thread: Thread, guild_id: int):
+        """Send inactive ticket notification to thread"""
+        try:
+            # Get inactive ticket settings for this channel
+            settings = await self._get_inactive_ticket_settings(thread.parent_id)
+            if not settings or not settings.get('enabled', False):
+                return
+            
+            # Check if we already sent a notification recently
+            notification_key = f"inactive_notif_{thread.id}"
+            last_notification = database.get_thread_data(thread.id, notification_key)
+            if last_notification:
+                last_notif_time = datetime.fromisoformat(last_notification)
+                if (datetime.now(timezone.utc) - last_notif_time).days < 1:
+                    return  # Already notified within last day
+            
+            # Get thread owner from first message mention (created by ticket bot)
+            thread_owner = None
+            thread_owner_id = None
+            async for message in thread.history(limit=10, oldest_first=True):
+                if message.mentions:
+                    # Get the first user mention in the message
+                    thread_owner = message.mentions[0]
+                    thread_owner_id = thread_owner.id
+                    break
+                # Also check message content for user ID patterns if mentions are empty
+                if not thread_owner and message.content:
+                    # Look for user mention pattern <@!userid> or <@userid>
+                    import re
+                    user_mention_pattern = r'<@!?(\d+)>'
+                    match = re.search(user_mention_pattern, message.content)
+                    if match:
+                        user_id = int(match.group(1))
+                        thread_owner = thread.guild.get_member(user_id)
+                        if thread_owner:
+                            thread_owner_id = user_id
+                            break
+            
+            if not thread_owner or not thread_owner_id:
+                # Try to extract username from thread name
+                import re
+                thread_name = thread.name
+                # Example: "Bug Report-advinturouskid" -> "advinturouskid"
+                match = re.search(r'-([A-Za-z0-9_]+)$', thread_name)
+                if match:
+                    possible_username = match.group(1)
+                    # Try to find a member with this username (case-insensitive)
+                    for member in thread.guild.members:
+                        if member.name.lower() == possible_username.lower() or (member.nick and member.nick.lower() == possible_username.lower()):
+                            thread_owner = member
+                            thread_owner_id = member.id
+                            break
+
+            if not thread_owner or not thread_owner_id:
+                logging.warning(f"Could not determine ticket owner for thread {thread.name} ({thread.id})")
+                return  # No user found
+            
+            # Create embed
+            embed = nextcord.Embed(
+                title="Inactive Ticket Notification",
+                description=f"{thread_owner.mention}, this ticket has been inactive for {INACTIVE_DAYS_THRESHOLD} days and support has not yet responded. Would you like to notify them?",
+                color=nextcord.Color.orange()
+            )
+            embed.set_footer(text="Click the button below to ping support staff")
+            
+            # Create view with notification button
+            staff_roles = settings.get('staff_roles', [])
+            custom_message = settings.get('notification_message', "has notified you about this inactive ticket.")
+            view = InactiveTicketView()
+            
+            # Send the notification
+            await thread.send(content=thread_owner.mention, embed=embed, view=view)
+            
+            # Record that we sent a notification
+            database.set_thread_data(thread.id, notification_key, datetime.now(timezone.utc).isoformat())
+            
+            # Log the action
+            await self._log_action(
+                guild_id, 
+                "Inactive Ticket Notification Sent", 
+                thread_obj=thread,
+                details=f"Notified {thread_owner.mention} about {INACTIVE_DAYS_THRESHOLD}-day inactivity",
+                color=Color.orange()
+            )
+            
+        except Exception as e:
+            logging.error(f"Error sending inactive notification for thread {thread.name}: {e}")
+
+    @tasks.loop(hours=INACTIVE_CHECK_INTERVAL_HOURS)
+    async def check_inactive_tickets_task(self):
+        """Check for inactive open tickets and send notifications"""
+        await self.bot.wait_until_ready()
+        
+        if not self.bot.target_guild_id:
+            return
+        
+        guild = self.bot.get_guild(self.bot.target_guild_id)
+        if not guild:
+            return
+        
+        logging.info(f"Checking for inactive tickets in guild: {guild.name}")
+        
+        channels_to_scan = await self._get_channels_to_scan(guild)
+        
+        for channel_obj in channels_to_scan:
+            try:
+                # Check active (non-archived) threads only
+                active_threads = []
+                
+                if isinstance(channel_obj, TextChannel):
+                    active_threads.extend(channel_obj.threads)
+                elif isinstance(channel_obj, ForumChannel):
+                    active_threads.extend(channel_obj.threads)
+                
+                for thread in active_threads:
+                    if thread.archived:
+                        continue
+                    
+                    # Skip if thread has closed phrase
+                    has_closed_phrase = False
+                    try:
+                        async for msg in thread.history(limit=20):
+                            if CLOSED_PHRASE.lower() in msg.content.lower():
+                                has_closed_phrase = True
+                                break
+                            # Also check embeds
+                            for embed in msg.embeds:
+                                embed_texts = [embed.title, embed.description] + [f.value for f in embed.fields]
+                                if any(CLOSED_PHRASE.lower() in str(text).lower() for text in embed_texts if text):
+                                    has_closed_phrase = True
+                                    break
+                            if has_closed_phrase:
+                                break
+                    except:
+                        continue
+                    
+                    if has_closed_phrase:
+                        continue
+                    
+                    # Check if thread is inactive
+                    if await self._check_thread_inactivity(thread, guild.id):
+                        await self._send_inactive_notification(thread, guild.id)
+                        
+            except Exception as e:
+                logging.error(f"Error checking inactive tickets in {channel_obj.name}: {e}")
+
     async def cog_check(self, interaction: Interaction) -> bool:
         if not self.bot.target_guild_id:
             if not interaction.response.is_done(): 
@@ -279,6 +514,95 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             target_guild_name = getattr(self.bot, 'target_guild_name', 'the configured server')
             await interaction.followup.send(f"This bot is configured for a specific server. Please use commands in '{target_guild_name}'.", ephemeral=True); return False
         return True
+
+    @nextcord.slash_command(name="configure_inactive_notifications", description="Configure inactive ticket notifications for a channel")
+    @application_checks.has_permissions(manage_guild=True)
+    async def configure_inactive_notifications(
+        self, 
+        interaction: Interaction,
+        channel: nextcord.abc.GuildChannel = SlashOption(description="Channel to configure"),
+        enabled: bool = SlashOption(description="Enable inactive notifications"),
+        staff_roles: str = SlashOption(description="Comma-separated role IDs to ping", required=False),
+        notification_message: str = SlashOption(description="Custom message when notifying staff", required=False)
+    ):
+        await interaction.response.defer(ephemeral=True)
+        
+        if not isinstance(channel, (TextChannel, ForumChannel)):
+            await interaction.followup.send("Channel must be a text channel or forum channel.", ephemeral=True)
+            return
+        
+        # Parse staff roles
+        staff_role_ids = []
+        if staff_roles:
+            try:
+                staff_role_ids = [int(role_id.strip()) for role_id in staff_roles.split(',')]
+                # Validate roles exist
+                valid_roles = []
+                for role_id in staff_role_ids:
+                    role = interaction.guild.get_role(role_id)
+                    if role:
+                        valid_roles.append(role_id)
+                staff_role_ids = valid_roles
+            except ValueError:
+                await interaction.followup.send("Invalid role IDs provided. Use comma-separated numbers.", ephemeral=True)
+                return
+        
+        # Save settings
+        settings = {
+            'enabled': enabled,
+            'staff_roles': staff_role_ids,
+            'notification_message': notification_message or "has notified you about this inactive ticket."
+        }
+        
+        database.set_inactive_ticket_settings(channel.id, settings)
+        
+        role_mentions = ", ".join([f"<@&{role_id}>" for role_id in staff_role_ids]) if staff_role_ids else "None"
+        
+        embed = nextcord.Embed(
+            title="Inactive Ticket Notifications Configured",
+            color=nextcord.Color.green() if enabled else nextcord.Color.red()
+        )
+        embed.add_field(name="Channel", value=channel.mention, inline=False)
+        embed.add_field(name="Enabled", value="✅ Yes" if enabled else "❌ No", inline=True)
+        embed.add_field(name="Staff Roles", value=role_mentions, inline=False)
+        embed.add_field(name="Notification Message", value=settings['notification_message'], inline=False)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @nextcord.slash_command(name="view_inactive_settings", description="View inactive ticket notification settings")
+    @application_checks.has_permissions(manage_guild=True)
+    async def view_inactive_settings(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        channels_to_scan = await self._get_channels_to_scan(interaction.guild)
+        
+        embed = nextcord.Embed(
+            title="Inactive Ticket Notification Settings",
+            description="Current configuration for monitored channels",
+            color=nextcord.Color.blue()
+        )
+        
+        for channel in channels_to_scan:
+            settings = await self._get_inactive_ticket_settings(channel.id)
+            
+            if settings and settings.get('enabled'):
+                staff_roles = settings.get('staff_roles', [])
+                role_mentions = ", ".join([f"<@&{role_id}>" for role_id in staff_roles]) if staff_roles else "None"
+                
+                field_value = f"**Enabled:** ✅ Yes\n**Staff Roles:** {role_mentions}\n**Message:** {settings.get('notification_message', 'Default')}"
+            else:
+                field_value = "**Enabled:** ❌ No"
+            
+            embed.add_field(
+                name=f"#{channel.name}",
+                value=field_value,
+                inline=False
+            )
+        
+        if not embed.fields:
+            embed.description = "No monitored channels configured or no settings found."
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name="view_pending_deletions", description="Lists threads marked closed and past their deletion delay.")
     @application_checks.has_permissions(manage_guild=True)
@@ -506,6 +830,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 logging.error(f"[VIEW_SCANNED] Exception while sending paginated embed: {e}", exc_info=True)
                 await interaction.followup.send(f"A critical error occurred while displaying thread list. Check logs.", ephemeral=True)
                 break
-
+    
 def setup(bot: commands.Bot):
     bot.add_cog(TicketManagerCog(bot))
