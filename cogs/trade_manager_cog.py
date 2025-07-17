@@ -359,8 +359,9 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
 
                 # Check for 7-day lifetime limit
                 creation_ts = trade['creation_timestamp']
-                age_days = (now_unix - creation_ts) / (24 * 3600)
-                if age_days > 7:
+                age_seconds = now_unix - creation_ts
+                age_days = age_seconds / (24 * 3600)
+                if age_seconds >= (7 * 24 * 3600):
                     logger.info(f"⏰ Thread {thread.id} reached 7-day lifetime limit (age: {age_days:.1f} days). Closing.")
                     try:
                         await thread.edit(locked=True)
@@ -379,7 +380,7 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
         except Exception as e:
             logger.error(f"Critical error in expiration_and_deletion_task: {e}", exc_info=True)
 
-    @tasks.loop(hours=1)
+    @tasks.loop(hours=24)
     async def daily_reminder_task(self):
         self.refresh_config()
         forum_id = self.config.get('forum_channel_id') if self.config else None
@@ -410,7 +411,7 @@ class TradeManagerCog(commands.Cog, name="Trade Manager"):
             reminder_count = 0
             for trade in active_threads:
                 last_sent_ts = trade.get('last_reminder_sent_timestamp')
-                if last_sent_ts and (get_unix_time() - last_sent_ts) < (23 * 3600):
+                if last_sent_ts and (get_unix_time() - last_sent_ts) < (24 * 3600):
                     logger.debug(f"Thread {trade['thread_id']} reminder sent recently, skipping")
                     continue
 
