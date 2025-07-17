@@ -329,26 +329,72 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
     async def _check_thread_inactivity(self, thread: Thread, guild_id: int) -> bool:
         """Check if a thread has been inactive for the threshold period"""
         try:
-            # Get the last message in the thread
-            async for message in thread.history(limit=1):
-                last_message_time = message.created_at
-                if last_message_time.tzinfo is None:
-                    last_message_time = last_message_time.replace(tzinfo=timezone.utc)
+            # Get inactive ticket settings to determine staff roles
+            settings = await self._get_inactive_ticket_settings(thread.parent_id)
+            staff_role_ids = settings.get('staff_roles', []) if settings else []
+            
+            # Get the last message from support staff in the thread
+            last_support_message_time = None
+            async for message in thread.history(limit=50):  # Check more messages to find support activity
+                # Skip messages from the ticket owner
+                thread_owner_id = await self._get_thread_owner_id(thread)
+                if message.author.id == thread_owner_id:
+                    continue
                 
-                time_since_last = datetime.now(timezone.utc) - last_message_time
-                return time_since_last.days >= INACTIVE_DAYS_THRESHOLD
+                # Check if message author has any of the staff roles
+                if hasattr(message.author, 'roles'):
+                    author_role_ids = [role.id for role in message.author.roles]
+                    if any(role_id in staff_role_ids for role_id in author_role_ids):
+                        last_support_message_time = message.created_at
+                        break
+                
+                # Also consider bot messages as support activity (for ticket bots)
+                if message.author.bot:
+                    last_support_message_time = message.created_at
+                    break
             
-            # If no messages found, check thread creation time
-            thread_created = thread.created_at
-            if thread_created.tzinfo is None:
-                thread_created = thread_created.replace(tzinfo=timezone.utc)
+            # If no support message found, use thread creation time
+            if not last_support_message_time:
+                last_support_message_time = thread.created_at
             
-            time_since_created = datetime.now(timezone.utc) - thread_created
-            return time_since_created.days >= INACTIVE_DAYS_THRESHOLD
+            if last_support_message_time.tzinfo is None:
+                last_support_message_time = last_support_message_time.replace(tzinfo=timezone.utc)
+            
+            time_since_last_support = datetime.now(timezone.utc) - last_support_message_time
+            return time_since_last_support.days >= INACTIVE_DAYS_THRESHOLD
             
         except Exception as e:
             logging.error(f"Error checking thread inactivity for {thread.name}: {e}")
             return False
+
+    async def _get_thread_owner_id(self, thread: Thread) -> Optional[int]:
+        """Get the thread owner's user ID"""
+        try:
+            async for message in thread.history(limit=10, oldest_first=True):
+                if message.mentions:
+                    return message.mentions[0].id
+                # Also check message content for user ID patterns if mentions are empty
+                if message.content:
+                    import re
+                    user_mention_pattern = r'<@!?(\d+)>'
+                    match = re.search(user_mention_pattern, message.content)
+                    if match:
+                        return int(match.group(1))
+            
+            # Try to extract username from thread name
+            import re
+            thread_name = thread.name
+            match = re.search(r'-([A-Za-z0-9_]+)$', thread_name)
+            if match:
+                possible_username = match.group(1)
+                for member in thread.guild.members:
+                    if member.name.lower() == possible_username.lower() or (member.nick and member.nick.lower() == possible_username.lower()):
+                        return member.id
+            
+            return None
+        except Exception as e:
+            logging.error(f"Error getting thread owner ID for {thread.name}: {e}")
+            return None
 
     async def _send_inactive_notification(self, thread: Thread, guild_id: int):
         """Send inactive ticket notification to thread"""
@@ -366,46 +412,28 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 if (datetime.now(timezone.utc) - last_notif_time).days < 1:
                     return  # Already notified within last day
             
-            # Get thread owner from first message mention (created by ticket bot)
-            thread_owner = None
-            thread_owner_id = None
-            async for message in thread.history(limit=10, oldest_first=True):
-                if message.mentions:
-                    # Get the first user mention in the message
-                    thread_owner = message.mentions[0]
-                    thread_owner_id = thread_owner.id
-                    break
-                # Also check message content for user ID patterns if mentions are empty
-                if not thread_owner and message.content:
-                    # Look for user mention pattern <@!userid> or <@userid>
-                    import re
-                    user_mention_pattern = r'<@!?(\d+)>'
-                    match = re.search(user_mention_pattern, message.content)
-                    if match:
-                        user_id = int(match.group(1))
-                        thread_owner = thread.guild.get_member(user_id)
-                        if thread_owner:
-                            thread_owner_id = user_id
-                            break
-            
-            if not thread_owner or not thread_owner_id:
-                # Try to extract username from thread name
-                import re
-                thread_name = thread.name
-                # Example: "Bug Report-advinturouskid" -> "advinturouskid"
-                match = re.search(r'-([A-Za-z0-9_]+)$', thread_name)
-                if match:
-                    possible_username = match.group(1)
-                    # Try to find a member with this username (case-insensitive)
-                    for member in thread.guild.members:
-                        if member.name.lower() == possible_username.lower() or (member.nick and member.nick.lower() == possible_username.lower()):
-                            thread_owner = member
-                            thread_owner_id = member.id
-                            break
-
-            if not thread_owner or not thread_owner_id:
+            # Get thread owner
+            thread_owner_id = await self._get_thread_owner_id(thread)
+            if not thread_owner_id:
                 logging.warning(f"Could not determine ticket owner for thread {thread.name} ({thread.id})")
-                return  # No user found
+                return
+            
+            thread_owner = thread.guild.get_member(thread_owner_id)
+            if not thread_owner:
+                logging.warning(f"Thread owner {thread_owner_id} not found in guild for thread {thread.name}")
+                return
+            
+            # Delete previous inactive notification if it exists
+            try:
+                async for message in thread.history(limit=20):
+                    if (message.author == self.bot.user and 
+                        message.embeds and 
+                        len(message.embeds) > 0 and
+                        message.embeds[0].title == "Inactive Ticket Notification"):
+                        await message.delete()
+                        break
+            except Exception as e:
+                logging.debug(f"Could not delete previous inactive notification: {e}")
             
             # Create embed
             embed = nextcord.Embed(
@@ -416,8 +444,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             embed.set_footer(text="Click the button below to ping support staff")
             
             # Create view with notification button
-            staff_roles = settings.get('staff_roles', [])
-            custom_message = settings.get('notification_message', "has notified you about this inactive ticket.")
             view = InactiveTicketView()
             
             # Send the notification
@@ -437,7 +463,7 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             
         except Exception as e:
             logging.error(f"Error sending inactive notification for thread {thread.name}: {e}")
-
+            
     @tasks.loop(hours=INACTIVE_CHECK_INTERVAL_HOURS)
     async def check_inactive_tickets_task(self):
         """Check for inactive open tickets and send notifications"""
