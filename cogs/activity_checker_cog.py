@@ -419,6 +419,9 @@ class ActivityChecker(commands.Cog):
             # Move user to AFK channel
             try:
                 await member.move_to(afk_channel)
+
+                # Assign inactive role
+                await self._assign_inactive_role(member)
                 
                 # Get original voice channel for reference
                 original_vc = self.bot.get_channel(original_vc_id)
@@ -471,6 +474,44 @@ class ActivityChecker(commands.Cog):
         if guild_id in self.user_voice_tracking and user_id in self.user_voice_tracking[guild_id]:
             self.user_voice_tracking[guild_id][user_id]['last_check_time'] = current_time
 
+    async def _assign_inactive_role(self, member: nextcord.Member):
+        """Assign the inactive role to a member and schedule its removal if configured."""
+        inactive_role_id = self.settings.get('inactive_role_id')
+        if not inactive_role_id:
+            return
+        
+        inactive_role = member.guild.get_role(inactive_role_id)
+        if not inactive_role:
+            logger.warning(f"Inactive role {inactive_role_id} not found in guild {member.guild.id}")
+            return
+        
+        try:
+            await member.add_roles(inactive_role, reason="Failed activity check")
+            logger.info(f"Added inactive role to {member.display_name}")
+            
+            # Schedule role removal if duration is set
+            duration_minutes = self.settings.get('inactive_role_duration_minutes', 0)
+            if duration_minutes > 0:
+                asyncio.create_task(self._remove_inactive_role_after_delay(member, inactive_role, duration_minutes))
+        
+        except nextcord.Forbidden:
+            logger.warning(f"Missing permissions to assign inactive role to {member.display_name}")
+        except nextcord.HTTPException as e:
+            logger.error(f"Error assigning inactive role to {member.display_name}: {e}")
+
+    async def _remove_inactive_role_after_delay(self, member: nextcord.Member, role: nextcord.Role, minutes: int):
+        """Remove the inactive role after a specified delay."""
+        await asyncio.sleep(minutes * 60)
+        
+        try:
+            if role in member.roles:
+                await member.remove_roles(role, reason="Inactive role duration expired")
+                logger.info(f"Removed inactive role from {member.display_name} after {minutes} minutes")
+        except nextcord.Forbidden:
+            logger.warning(f"Missing permissions to remove inactive role from {member.display_name}")
+        except nextcord.HTTPException as e:
+            logger.error(f"Error removing inactive role from {member.display_name}: {e}")
+            
     # Slash command group
     @nextcord.slash_command(name="activity", description="Voice activity checker commands")
     async def activity_group(self, interaction: nextcord.Interaction):
@@ -592,6 +633,20 @@ class ActivityChecker(commands.Cog):
         else:
             afk_channel_text = "Not set"
         embed.add_field(name="AFK Channel", value=afk_channel_text, inline=True)
+
+        # Inactive Role
+        inactive_role_id = self.settings.get('inactive_role_id')
+        if inactive_role_id:
+            inactive_role = interaction.guild.get_role(inactive_role_id)
+            inactive_role_text = inactive_role.mention if inactive_role else f"Unknown Role ({inactive_role_id})"
+        else:
+            inactive_role_text = "Not set"
+        embed.add_field(name="Inactive Role", value=inactive_role_text, inline=True)
+        
+        # Role Duration
+        duration_minutes = self.settings.get('inactive_role_duration_minutes', 0)
+        duration_text = f"{duration_minutes} minutes" if duration_minutes > 0 else "Permanent"
+        embed.add_field(name="Role Duration", value=duration_text, inline=True)
         
         # Excluded Channels
         excluded_channels = self.settings['excluded_channels']
@@ -716,6 +771,39 @@ class ActivityChecker(commands.Cog):
             logger.error(f"Error during manual activity check: {e}")
             await interaction.followup.send(f"Error during activity check: {str(e)}", ephemeral=True)
 
+    @activity_group.subcommand(name="set_inactive_role", description="Set the role to assign to users who fail activity checks.")
+    async def set_inactive_role(self, interaction: nextcord.Interaction,
+                            role: nextcord.Role = SlashOption(name="role", 
+                                                            description="The role to assign to inactive users.", 
+                                                            required=False)):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need 'Manage Server' permissions to use this command.", ephemeral=True)
+            return
+        
+        if role:
+            self.settings['inactive_role_id'] = role.id
+            update_setting('inactive_role_id', role.id)
+            await interaction.response.send_message(f"Inactive role set to: {role.mention}", ephemeral=True)
+        else:
+            self.settings['inactive_role_id'] = None
+            update_setting('inactive_role_id', None)
+            await interaction.response.send_message("Inactive role disabled.", ephemeral=True)
+
+    @activity_group.subcommand(name="set_role_duration", description="Set how long the inactive role stays on users (in minutes).")
+    async def set_role_duration(self, interaction: nextcord.Interaction,
+                            minutes: int = SlashOption(name="minutes", 
+                                                        description="Number of minutes (0 for permanent until manual removal).", 
+                                                        min_value=0)):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need 'Manage Server' permissions to use this command.", ephemeral=True)
+            return
+        
+        self.settings['inactive_role_duration_minutes'] = minutes
+        update_setting('inactive_role_duration_minutes', minutes)
+        
+        duration_text = f"{minutes} minutes" if minutes > 0 else "permanent (until manual removal)"
+        await interaction.response.send_message(f"Inactive role duration set to: {duration_text}", ephemeral=True)
+        
 def setup(bot):
     """Add the ActivityChecker cog to the bot."""
     bot.add_cog(ActivityChecker(bot))

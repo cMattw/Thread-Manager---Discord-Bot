@@ -39,6 +39,8 @@ def init_db():
                 excluded_channels TEXT DEFAULT '[]',
                 is_enabled INTEGER DEFAULT 1,
                 check_interval_minutes INTEGER DEFAULT 30
+                inactive_role_id INTEGER,
+                inactive_role_duration_minutes INTEGER DEFAULT 0
             )
         ''')
         
@@ -66,6 +68,14 @@ def init_db():
             cursor.execute('ALTER TABLE settings ADD COLUMN check_interval_minutes INTEGER DEFAULT 30')
             logging.info("Added check_interval_minutes column to existing settings table.")
         
+        if 'inactive_role_id' not in columns:
+            cursor.execute('ALTER TABLE settings ADD COLUMN inactive_role_id INTEGER')
+            logging.info("Added inactive_role_id column to existing settings table.")
+        
+        if 'inactive_role_duration_minutes' not in columns:
+            cursor.execute('ALTER TABLE settings ADD COLUMN inactive_role_duration_minutes INTEGER DEFAULT 0')
+            logging.info("Added inactive_role_duration_minutes column to existing settings table.")
+        
         conn.commit()
         conn.close()
         logging.info("Activity checker database initialized successfully.")
@@ -92,7 +102,9 @@ def get_settings():
                 'response_timeout_minutes': row[3],
                 'excluded_channels': json.loads(row[4]) if row[4] else [],
                 'is_enabled': bool(row[5]) if len(row) > 5 else True,
-                'check_interval_minutes': row[6] if len(row) > 6 else 30
+                'check_interval_minutes': row[6] if len(row) > 6 else 30,
+                'inactive_role_id': row[7] if len(row) > 7 else None,
+                'inactive_role_duration_minutes': row[8] if len(row) > 8 else 0
             }
             return settings
         else:
@@ -104,7 +116,9 @@ def get_settings():
                 'response_timeout_minutes': 1,
                 'excluded_channels': [],
                 'is_enabled': True,
-                'check_interval_minutes': 30
+                'check_interval_minutes': 30,
+                'inactive_role_id': None,
+                'inactive_role_duration_minutes': 0
             }
             
     except sqlite3.Error as e:
