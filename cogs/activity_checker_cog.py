@@ -336,8 +336,8 @@ class ActivityChecker(commands.Cog):
             return False
         if member.voice.self_deaf or member.voice.deaf:
             return False
-
-            # Skip users who are sharing screen or video (considered active)
+        
+        # Skip users who are sharing screen or video (considered active)
         if member.voice.self_video or member.voice.self_stream:
             return False
         
@@ -347,10 +347,19 @@ class ActivityChecker(commands.Cog):
         """Get eligible users in a voice channel for activity checking."""
         eligible_users = []
         
-        # Filter channel members
+        # Filter channel members - count all unmuted/undeafened users for the 2-user minimum
         for member in channel.members:
-            if self._is_user_eligible_for_check(member):
-                eligible_users.append(member)
+            if not self._is_human_member(member):
+                continue
+            if not member.voice:
+                continue
+            # Only check mute/deaf status for counting toward minimum
+            if member.voice.self_mute or member.voice.mute:
+                continue
+            if member.voice.self_deaf or member.voice.deaf:
+                continue
+            
+            eligible_users.append(member)
         
         return eligible_users
 
