@@ -336,6 +336,10 @@ class ActivityChecker(commands.Cog):
             return False
         if member.voice.self_deaf or member.voice.deaf:
             return False
+
+            # Skip users who are sharing screen or video (considered active)
+        if member.voice.self_video or member.voice.self_stream:
+            return False
         
         return True
 
