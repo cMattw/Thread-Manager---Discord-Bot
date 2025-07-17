@@ -38,7 +38,7 @@ def init_db():
                 response_timeout_minutes INTEGER DEFAULT 1,
                 excluded_channels TEXT DEFAULT '[]',
                 is_enabled INTEGER DEFAULT 1,
-                check_interval_minutes INTEGER DEFAULT 30
+                check_interval_minutes INTEGER DEFAULT 30,
                 inactive_role_id INTEGER,
                 inactive_role_duration_minutes INTEGER DEFAULT 0
             )
