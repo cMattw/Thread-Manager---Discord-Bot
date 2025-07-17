@@ -251,7 +251,7 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
                         logger.info(f"Gave {role.name} to {member.display_name} for {months_boosted} months of boosting.")
                     except Exception as e:
                         logger.error(f"Failed to assign role to {member.display_name}: {e}")
-
+                        
     # --- COMMANDS ---
 
     @nextcord.slash_command(name="boost", description="User booster info and leaderboard.")
