@@ -78,7 +78,7 @@ class ReminderView(ui.View):
             pass
             
         await interaction.followup.send("Thanks for the update! I've reset the inactivity timer.", ephemeral=True)
-        
+                
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
