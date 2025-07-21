@@ -183,10 +183,34 @@ class SuggestionView(ui.View):
 
             thread_message = await webhook.send(**webhook_params)
             new_thread = thread_message.thread
-            
+
             if new_thread is None:
                 logging.error(f"Failed to create thread for suggestion in guild {interaction.guild.id}.")
                 await self.original_interaction.followup.send("❌ **Error:** Failed to create a thread. Please check my permissions.", ephemeral=True); return
+
+            # Always log the suggestion, even if anonymous
+            author_display = interaction.user.display_name
+            author_mention = interaction.user.mention
+            author_avatar = interaction.user.display_avatar.url if interaction.user.display_avatar else None
+            log_embed = Embed(
+                title="New Suggestion Submitted",
+                color=Color.orange(),
+                description=f"**Title:** {self.title}\n\n**Description:** {self.description[:2000]}"
+            )
+            log_embed.add_field(name="Thread", value=f"[Jump to Suggestion]({new_thread.jump_url})", inline=False)
+            log_embed.add_field(name="Author", value=f"{author_display} ({author_mention})", inline=False)
+            if author_avatar:
+                log_embed.set_thumbnail(url=author_avatar)
+            log_embed.set_footer(text="Anonymous" if is_anonymous else "Not Anonymous")
+
+            logging_channel_id = db.get_logging_channel_id(interaction.guild.id)
+            if logging_channel_id:
+                logging_channel = interaction.guild.get_channel(int(logging_channel_id))
+                if logging_channel:
+                    try:
+                        await logging_channel.send(embed=log_embed)
+                    except Exception as e:
+                        logging.warning(f"Failed to send suggestion log embed: {e}")
 
             if not is_anonymous:
                 db.add_suggestion(new_thread.id, interaction.user.id, interaction.guild.id)
@@ -412,6 +436,12 @@ class SuggestionsCog(commands.Cog, name="Suggestions"):
             embed.add_field(name=f"{status} Status", value=f"**Tag:** `{tag_name}`\n**Message:**\n```{message}```", inline=False)
             
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @config_group.subcommand(name="set_logging_channel", description="Set the channel for suggestion logs.")
+    @application_checks.has_permissions(manage_guild=True)
+    async def set_logging_channel(self, interaction: Interaction, channel: nextcord.TextChannel = SlashOption(required=True)):
+        db.set_logging_channel_id(interaction.guild.id, str(channel.id))
+        await interaction.response.send_message(f"✅ Logging channel set to {channel.mention}.", ephemeral=True)
 
 def setup(bot: commands.Bot):
     bot.add_cog(SuggestionsCog(bot))

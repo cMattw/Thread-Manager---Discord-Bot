@@ -62,6 +62,7 @@ def initialize_database(guild_id: int):
             "planned_message": "TEXT DEFAULT 'This suggestion has been marked as **Planned**.'",
             "implemented_message": "TEXT DEFAULT 'This suggestion has been **Implemented**.'",
             "denied_message": "TEXT DEFAULT 'This suggestion has been **Denied**.'",
+            "logging_channel_id": "TEXT",
         }
         
         for col_name, col_type in new_columns.items():
@@ -102,7 +103,21 @@ def update_config(guild_id: int, settings: Dict[str, Any]) -> bool:
         conn.commit()
         return cursor.rowcount > 0
 
+
 # --- New functions for suggestion tracking ---
+
+def get_logging_channel_id(guild_id: int) -> Optional[str]:
+    """Gets the logging channel ID for a guild."""
+    initialize_database(guild_id)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT logging_channel_id FROM config WHERE server_id = ?", (str(guild_id),))
+        row = cursor.fetchone()
+        return row["logging_channel_id"] if row and row["logging_channel_id"] else None
+
+def set_logging_channel_id(guild_id: int, channel_id: str) -> bool:
+    """Sets the logging channel ID for a guild."""
+    return update_config(guild_id, {"logging_channel_id": channel_id})
 
 def add_suggestion(thread_id: int, suggester_id: int, guild_id: int):
     """Adds a new suggestion to the tracking database."""
