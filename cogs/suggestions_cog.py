@@ -191,17 +191,19 @@ class SuggestionView(ui.View):
             # Always log the suggestion, even if anonymous
             author_display = interaction.user.display_name
             author_mention = interaction.user.mention
-            author_avatar = interaction.user.display_avatar.url if interaction.user.display_avatar else None
             log_embed = Embed(
-                title="New Suggestion Submitted",
+                title="Suggestion Logged",
                 color=Color.orange(),
-                description=f"**Title:** {self.title}\n\n**Description:** {self.description[:2000]}"
+                description=(
+                    f"{author_mention} | {author_display}\n"
+                    f"**Title:** {self.title}\n"
+                    f"**Description:** {self.description[:2000]}"
+                )
             )
             log_embed.add_field(name="Thread", value=f"[Jump to Suggestion]({new_thread.jump_url})", inline=False)
-            log_embed.add_field(name="Author", value=f"{author_display} ({author_mention})", inline=False)
-            if author_avatar:
-                log_embed.set_thumbnail(url=author_avatar)
-            log_embed.set_footer(text="Anonymous" if is_anonymous else "Not Anonymous")
+            # Footer: Anonymous if anonymous, blank otherwise
+            if is_anonymous:
+                log_embed.set_footer(text="Anonymous")
 
             logging_channel_id = db.get_logging_channel_id(interaction.guild.id)
             if logging_channel_id:
