@@ -428,7 +428,7 @@ class ActivityChecker(commands.Cog):
                 
                 # Send message to AFK channel
                 await afk_channel.send(
-                    f"{member.mention}, you have been moved here due to inactivity in voice channel "
+                    f"{member.mention}, you have been moved here due to inactivity in "
                     f"{original_vc.mention if original_vc else 'an unknown channel'}."
                 )
                 
