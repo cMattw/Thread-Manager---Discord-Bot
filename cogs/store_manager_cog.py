@@ -948,6 +948,59 @@ class StoreManagerCog(commands.Cog, name="Store Manager"):
     async def remove_sub_autocomplete(self, i: nextcord.Interaction, val: str):
         await i.response.send_autocomplete(await self.subscription_item_autocomplete(i, val))
 
+    @store_admin_group.subcommand(name="recover_expirations", description="Automatically recover missing expiration records for donator roles.")
+    @application_checks.has_permissions(administrator=True)
+    async def recover_expirations(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        store_items = db.get_all_store_items()
+        sub_items = {item['item_name']: item for item in store_items if item.get('is_subscription') and item.get('associated_role_id')}
+        transactions = []
+        for item_name in sub_items:
+            transactions += db.get_transactions_by_item(item_name)
+        recovered = 0
+        already_present = 0
+        skipped = 0
+        now = get_unix_time()
+        guild = interaction.guild
+        for trans in transactions:
+            item = sub_items.get(trans['item_description'])
+            if not item:
+                skipped += 1
+                continue
+            role_id = item['associated_role_id']
+            user_id = trans['user_id']
+            is_perm = trans.get('is_permanent', 0)
+            expired = trans.get('expired', 0)
+            if is_perm or expired:
+                skipped += 1
+                continue
+            # Estimate expiration: If original record missing, set to purchase timestamp + 30 days (or configurable)
+            duration_days = 30
+            if 'duration_days' in trans:
+                duration_days = trans['duration_days']
+            elif 'months' in trans and trans['months']:
+                duration_days = int(trans['months']) * 30
+            expiry_ts = trans['timestamp'] + duration_days * 24 * 3600
+            # If the scheduled removal already exists, skip
+            existing = db.get_user_subscription(user_id, role_id)
+            if existing:
+                already_present += 1
+                continue
+            if expiry_ts < now:
+                skipped += 1
+                continue
+            db.schedule_role_removal(user_id, role_id, expiry_ts)
+            recovered += 1
+            # Optional: re-assign role if missing
+            member = guild.get_member(user_id)
+            role = guild.get_role(role_id)
+            if member and role and role not in member.roles:
+                try:
+                    await member.add_roles(role, reason="Recovered subscription role")
+                except Exception:
+                    pass
+        await interaction.followup.send(f"Recovered {recovered} expiration records. {already_present} already present. {skipped} skipped (permanent, expired, or missing info).", ephemeral=True)
+
 def setup(bot: commands.Bot):
     global logger
     if not logger.handlers:
