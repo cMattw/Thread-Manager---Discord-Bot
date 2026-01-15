@@ -198,42 +198,62 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             if is_dry_run: return {"id": thread.id, "name": thread.name, "error": "Failed to fetch history"}
             return None
         
-        if is_dry_run and check_closed_phrase_only: 
-            base_info = {"id": thread.id, "name": thread.name, "parent_name": thread.parent.name if thread.parent else "Unknown", "parent_id": thread.parent_id}
-            if found_closed_phrase_in_message_or_embed and timestamp_of_phrase:
-                base_info["status"] = "Archived (Closed)"; base_info["closed_at"] = timestamp_of_phrase
-                if timestamp_of_phrase.tzinfo is None: timestamp_of_phrase = timestamp_of_phrase.replace(tzinfo=timezone.utc)
-                base_info["delete_due_at"] = timestamp_of_phrase + timedelta(days=delete_delay_config_days)
-            else: base_info["status"] = "Archived (Inactive)"
-            return base_info
-
+        # Always return status and deletion info for closed threads, not just in dry run
         if found_closed_phrase_in_message_or_embed and timestamp_of_phrase:
-            if timestamp_of_phrase.tzinfo is None: timestamp_of_phrase = timestamp_of_phrase.replace(tzinfo=timezone.utc)
+            if timestamp_of_phrase.tzinfo is None:
+                timestamp_of_phrase = timestamp_of_phrase.replace(tzinfo=timezone.utc)
             delete_after_timestamp = timestamp_of_phrase + timedelta(days=delete_delay_config_days)
-            if datetime.now(timezone.utc) > delete_after_timestamp: 
-                if is_dry_run: return {"name": thread.name, "id": thread.id, "closed_at": timestamp_of_phrase, "delete_due_at": delete_after_timestamp, "channel_id": thread.parent_id, "channel_name": thread.parent.name if thread.parent else "Unknown"}
-                try: 
+            # If deletion date passed, delete
+            if datetime.now(timezone.utc) > delete_after_timestamp:
+                if is_dry_run:
+                    return {"name": thread.name, "id": thread.id, "closed_at": timestamp_of_phrase, "delete_due_at": delete_after_timestamp, "channel_id": thread.parent_id, "channel_name": thread.parent.name if thread.parent else "Unknown", "status": "Archived (Closed)"}
+                try:
                     logging.info(f"Deleting thread {thread.name} ({thread.id}) as it was closed and {delete_delay_config_days} day(s) delay period passed.")
-                    await thread.delete() 
-                    if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Deleted", thread_obj=thread, details=f"Ticket closed on {timestamp_of_phrase.astimezone(MANILA_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')} and {delete_delay_config_days} day(s) deletion delay passed.", color=Color.dark_red())
-                except nextcord.Forbidden: 
+                    await thread.delete()
+                    if guild_settings.get('log_channel_id'):
+                        await self._log_action(guild_id, "Thread Deleted", thread_obj=thread, details=f"Ticket closed on {timestamp_of_phrase.astimezone(MANILA_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')} and {delete_delay_config_days} day(s) deletion delay passed.", color=Color.dark_red())
+                except nextcord.Forbidden:
                     logging.warning(f"Missing permissions to delete thread {thread.name} ({thread.id}).")
-                    if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Deletion FAILED", thread_obj=thread, details="Missing Manage Threads permission.", error_details_text="Forbidden", color=Color.red())
-                except nextcord.HTTPException as e: 
+                    if guild_settings.get('log_channel_id'):
+                        await self._log_action(guild_id, "Thread Deletion FAILED", thread_obj=thread, details="Missing Manage Threads permission.", error_details_text="Forbidden", color=Color.red())
+                except nextcord.HTTPException as e:
                     logging.error(f"HTTP error deleting thread {thread.name} ({thread.id}): {e}")
-                    if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Deletion FAILED", thread_obj=thread, details="Discord API error.", error_details_text=str(e), color=Color.red())
-            elif not is_dry_run: logging.debug(f"Thread {thread.name} ({thread.id}) is closed but {delete_delay_config_days} day(s) delay has not passed. Phrase found at {timestamp_of_phrase}. Will be deleted after {delete_after_timestamp}.")
-        elif not is_dry_run: 
+                    if guild_settings.get('log_channel_id'):
+                        await self._log_action(guild_id, "Thread Deletion FAILED", thread_obj=thread, details="Discord API error.", error_details_text=str(e), color=Color.red())
+            else:
+                # Always return info for closed threads, so they can be scheduled for deletion
+                return {
+                    "id": thread.id,
+                    "name": thread.name,
+                    "parent_name": thread.parent.name if thread.parent else "Unknown",
+                    "parent_id": thread.parent_id,
+                    "status": "Archived (Closed)",
+                    "closed_at": timestamp_of_phrase,
+                    "delete_due_at": delete_after_timestamp
+                }
+        elif is_dry_run and check_closed_phrase_only:
+            # In dry run, if not closed, mark as inactive
+            return {
+                "id": thread.id,
+                "name": thread.name,
+                "parent_name": thread.parent.name if thread.parent else "Unknown",
+                "parent_id": thread.parent_id,
+                "status": "Archived (Inactive)"
+            }
+        elif not is_dry_run:
             try:
                 logging.info(f"Unarchiving non-exempted thread {thread.name} ({thread.id}) due to inactivity (no closure message found).")
-                await thread.edit(archived=False) 
-                if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Auto-Unarchived", thread_obj=thread, details="Thread auto-archived by Discord, unarchiving to keep active (non-exempted).", color=Color.gold())
-            except nextcord.Forbidden: 
+                await thread.edit(archived=False)
+                if guild_settings.get('log_channel_id'):
+                    await self._log_action(guild_id, "Thread Auto-Unarchived", thread_obj=thread, details="Thread auto-archived by Discord, unarchiving to keep active (non-exempted).", color=Color.gold())
+            except nextcord.Forbidden:
                 logging.warning(f"Missing permissions to unarchive non-exempted thread {thread.name} ({thread.id}).")
-                if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Unarchive FAILED", thread_obj=thread, details="Missing Manage Threads permission for non-exempted thread.", error_details_text="Forbidden", color=Color.red())
-            except nextcord.HTTPException as e: 
+                if guild_settings.get('log_channel_id'):
+                    await self._log_action(guild_id, "Thread Unarchive FAILED", thread_obj=thread, details="Missing Manage Threads permission for non-exempted thread.", error_details_text="Forbidden", color=Color.red())
+            except nextcord.HTTPException as e:
                 logging.error(f"HTTP error unarchiving non-exempted thread {thread.name} ({thread.id}): {e}")
-                if guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Unarchive FAILED", thread_obj=thread, details="Discord API error for non-exempted thread.", error_details_text=str(e), color=Color.red())
+                if guild_settings.get('log_channel_id'):
+                    await self._log_action(guild_id, "Thread Unarchive FAILED", thread_obj=thread, details="Discord API error for non-exempted thread.", error_details_text=str(e), color=Color.red())
         return None
 
     @tasks.loop(minutes=DEFAULT_SCAN_INTERVAL_MINUTES)
