@@ -204,7 +204,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 timestamp_of_phrase = timestamp_of_phrase.replace(tzinfo=timezone.utc)
             delete_after_timestamp = timestamp_of_phrase + timedelta(days=delete_delay_config_days)
             # Persist status and deletion info to the database
-            import db_utils.database as database
             database.set_thread_data(thread.id, "status", "Archived (Closed)")
             database.set_thread_data(thread.id, "closed_at", timestamp_of_phrase.isoformat())
             database.set_thread_data(thread.id, "delete_due_at", delete_after_timestamp.isoformat())
@@ -758,7 +757,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                             continue
                         # Ensure guild_id is correctly passed (it's self.bot.target_guild_id or interaction.guild.id)
                         # Try to load persisted status info first
-                        import db_utils.database as database
                         status = database.get_thread_data(thread_item.id, "status")
                         closed_at_str = database.get_thread_data(thread_item.id, "closed_at")
                         delete_due_at_str = database.get_thread_data(thread_item.id, "delete_due_at")
