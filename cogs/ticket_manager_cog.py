@@ -848,18 +848,53 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 break
     
     async def _has_closed_phrase(self, message: nextcord.Message) -> bool:
-        """Check if message contains closed phrase in content or embeds"""
+        """Check if message contains closed phrase in content, embeds, or V2 components"""
         # Check message content
         if message.content and CLOSED_PHRASE.lower() in message.content.lower():
             return True
-        
+
         # Check all embeds thoroughly
         for embed in message.embeds:
-            # Convert entire embed to string and search
             embed_str = str(embed.to_dict()).lower()
             if CLOSED_PHRASE.lower() in embed_str:
                 return True
-        
+
+        # Check Components V2 (Text Display, Section, Container, etc.)
+        def search_components(components):
+            if not components:
+                return False
+            for comp in components:
+                comp_type = comp.get('type')
+                # Text Display (type 10)
+                if comp_type == 10 and 'content' in comp:
+                    if CLOSED_PHRASE.lower() in comp['content'].lower():
+                        return True
+                # Section (type 9), Container (type 17), Action Row (type 1), etc. can have children
+                for key in ('components', 'accessory', 'component'):
+                    child = comp.get(key)
+                    if isinstance(child, list):
+                        if search_components(child):
+                            return True
+                    elif isinstance(child, dict):
+                        if search_components([child]):
+                            return True
+            return False
+
+        # nextcord.Message does not expose components directly, so use .raw_data if available
+        raw_data = getattr(message, 'raw_data', None)
+        if raw_data and 'components' in raw_data:
+            if search_components(raw_data['components']):
+                return True
+        # Some libraries may expose message.components directly as a list of dicts
+        if hasattr(message, 'components') and isinstance(message.components, list):
+            # Try to convert to dict if not already
+            try:
+                comp_dicts = [c.to_dict() if hasattr(c, 'to_dict') else c for c in message.components]
+            except Exception:
+                comp_dicts = message.components
+            if search_components(comp_dicts):
+                return True
+
         return False
     
 def setup(bot: commands.Bot):
