@@ -203,6 +203,11 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             if timestamp_of_phrase.tzinfo is None:
                 timestamp_of_phrase = timestamp_of_phrase.replace(tzinfo=timezone.utc)
             delete_after_timestamp = timestamp_of_phrase + timedelta(days=delete_delay_config_days)
+            # Persist status and deletion info to the database
+            import db_utils.database as database
+            database.set_thread_data(thread.id, "status", "Archived (Closed)")
+            database.set_thread_data(thread.id, "closed_at", timestamp_of_phrase.isoformat())
+            database.set_thread_data(thread.id, "delete_due_at", delete_after_timestamp.isoformat())
             # If deletion date passed, delete
             if datetime.now(timezone.utc) > delete_after_timestamp:
                 if is_dry_run:
@@ -752,15 +757,38 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                             logging.debug(f"[VIEW_SCANNED] Thread '{thread_item.name}' ID {thread_item.id} already listed, skipping.")
                             continue
                         # Ensure guild_id is correctly passed (it's self.bot.target_guild_id or interaction.guild.id)
-                        result = await self.process_archived_thread(
-                            thread_item, 
-                            guild.id, # Use guild.id from the fetched guild object
-                            delete_delay_val_days, 
-                            current_guild_settings, 
-                            exempted_thread_ids, 
-                            is_dry_run=True, 
-                            check_closed_phrase_only=True
-                        )
+                        # Try to load persisted status info first
+                        import db_utils.database as database
+                        status = database.get_thread_data(thread_item.id, "status")
+                        closed_at_str = database.get_thread_data(thread_item.id, "closed_at")
+                        delete_due_at_str = database.get_thread_data(thread_item.id, "delete_due_at")
+                        result = None
+                        if status and closed_at_str and delete_due_at_str:
+                            try:
+                                from datetime import datetime
+                                closed_at = datetime.fromisoformat(closed_at_str)
+                                delete_due_at = datetime.fromisoformat(delete_due_at_str)
+                                result = {
+                                    "id": thread_item.id,
+                                    "name": thread_item.name,
+                                    "parent_name": thread_item.parent.name if thread_item.parent else "Unknown",
+                                    "parent_id": thread_item.parent_id,
+                                    "status": status,
+                                    "closed_at": closed_at,
+                                    "delete_due_at": delete_due_at
+                                }
+                            except Exception as e:
+                                logging.warning(f"Could not parse persisted thread data for thread {thread_item.id}: {e}")
+                        if not result:
+                            result = await self.process_archived_thread(
+                                thread_item, 
+                                guild.id, # Use guild.id from the fetched guild object
+                                delete_delay_val_days, 
+                                current_guild_settings, 
+                                exempted_thread_ids, 
+                                is_dry_run=True, 
+                                check_closed_phrase_only=True
+                            )
                         if result: 
                             detected_threads_info.append(result)
                             threads_found_and_processed_in_channel += 1
