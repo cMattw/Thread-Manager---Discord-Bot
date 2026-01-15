@@ -864,6 +864,12 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             if not components:
                 return False
             for comp in components:
+                # Convert to dict if it's a nextcord.Component or similar object
+                if not isinstance(comp, dict):
+                    if hasattr(comp, 'to_dict'):
+                        comp = comp.to_dict()
+                    else:
+                        continue  # skip if not dict-like
                 comp_type = comp.get('type')
                 # Text Display (type 10)
                 if comp_type == 10 and 'content' in comp:
@@ -875,7 +881,10 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                     if isinstance(child, list):
                         if search_components(child):
                             return True
-                    elif isinstance(child, dict):
+                    elif isinstance(child, dict) or (hasattr(child, 'to_dict')):
+                        # Convert to dict if needed
+                        if not isinstance(child, dict) and hasattr(child, 'to_dict'):
+                            child = child.to_dict()
                         if search_components([child]):
                             return True
             return False
