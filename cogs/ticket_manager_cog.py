@@ -186,17 +186,12 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                     message_containing_phrase = msg_obj; timestamp_of_phrase = msg_obj.created_at; found_closed_phrase_in_message_or_embed = True
                     if not is_dry_run: logging.debug(f"Found '{CLOSED_PHRASE}' in thread {thread.name} (message content) by {msg_obj.author.name} at {timestamp_of_phrase}")
                     break 
-                if not found_closed_phrase_in_message_or_embed and msg_obj.embeds:
-                    for embed_obj in msg_obj.embeds:
-                        texts_to_check = [embed_obj.title, embed_obj.description, embed_obj.footer.text if embed_obj.footer else None, embed_obj.author.name if embed_obj.author else None]
-                        for field in embed_obj.fields: texts_to_check.extend([field.name, field.value])
-                        for text_content in filter(None, texts_to_check):
-                            if CLOSED_PHRASE.lower() in text_content.lower():
-                                message_containing_phrase = msg_obj; timestamp_of_phrase = msg_obj.created_at; found_closed_phrase_in_message_or_embed = True
-                                if not is_dry_run: logging.debug(f"Found '{CLOSED_PHRASE}' in thread {thread.name} (embed content) by {msg_obj.author.name} at {timestamp_of_phrase}")
-                                break 
-                        if found_closed_phrase_in_message_or_embed: break 
-                    if found_closed_phrase_in_message_or_embed: break
+                
+                # Use the new comprehensive method instead
+                if not found_closed_phrase_in_message_or_embed and await self._has_closed_phrase(msg_obj):
+                    message_containing_phrase = msg_obj; timestamp_of_phrase = msg_obj.created_at; found_closed_phrase_in_message_or_embed = True
+                    if not is_dry_run: logging.debug(f"Found '{CLOSED_PHRASE}' in thread {thread.name} (embed or content) by {msg_obj.author.name} at {timestamp_of_phrase}")
+                    break
         except nextcord.HTTPException as e:
             logging.error(f"Error fetching history for thread {thread.name} ({thread.id}): {e}")
             if not is_dry_run and guild_settings.get('log_channel_id'): await self._log_action(guild_id, "Thread Processing Error", thread_obj=thread, details="Failed to fetch message history.", error_details_text=str(e), color=Color.red())
@@ -851,6 +846,21 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 logging.error(f"[VIEW_SCANNED] Exception while sending paginated embed: {e}", exc_info=True)
                 await interaction.followup.send(f"A critical error occurred while displaying thread list. Check logs.", ephemeral=True)
                 break
+    
+    async def _has_closed_phrase(self, message: nextcord.Message) -> bool:
+        """Check if message contains closed phrase in content or embeds"""
+        # Check message content
+        if message.content and CLOSED_PHRASE.lower() in message.content.lower():
+            return True
+        
+        # Check all embeds thoroughly
+        for embed in message.embeds:
+            # Convert entire embed to string and search
+            embed_str = str(embed.to_dict()).lower()
+            if CLOSED_PHRASE.lower() in embed_str:
+                return True
+        
+        return False
     
 def setup(bot: commands.Bot):
     bot.add_cog(TicketManagerCog(bot))
