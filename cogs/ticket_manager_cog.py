@@ -864,10 +864,16 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             if not components:
                 return False
             for comp in components:
-                # Convert to dict if it's a nextcord.Component or similar object
+                # Convert to dict if it's a nextcord.Component or similar object, but skip base Component
                 if not isinstance(comp, dict):
-                    if hasattr(comp, 'to_dict'):
-                        comp = comp.to_dict()
+                    # Only call to_dict if implemented and not base Component
+                    to_dict = getattr(comp, 'to_dict', None)
+                    # Defensive: skip if to_dict is not callable or is base class (raises NotImplementedError)
+                    if callable(to_dict) and type(comp).__name__ != "Component":
+                        try:
+                            comp = to_dict()
+                        except NotImplementedError:
+                            continue  # skip base Component or broken to_dict
                     else:
                         continue  # skip if not dict-like
                 comp_type = comp.get('type')
@@ -882,9 +888,12 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                         if search_components(child):
                             return True
                     elif isinstance(child, dict) or (hasattr(child, 'to_dict')):
-                        # Convert to dict if needed
-                        if not isinstance(child, dict) and hasattr(child, 'to_dict'):
-                            child = child.to_dict()
+                        # Convert to dict if needed, skip base Component
+                        if not isinstance(child, dict) and hasattr(child, 'to_dict') and type(child).__name__ != "Component":
+                            try:
+                                child = child.to_dict()
+                            except NotImplementedError:
+                                continue
                         if search_components([child]):
                             return True
             return False
