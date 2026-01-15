@@ -643,59 +643,99 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
         
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name="view_pending_deletions", description="Lists threads marked closed and past their deletion delay.")
+    @nextcord.slash_command(name="view_pending_deletions", description="Lists threads marked closed and scheduled for deletion.")
     @application_checks.has_permissions(manage_guild=True)
     async def view_pending_deletions(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True); guild = self.bot.get_guild(self.bot.target_guild_id)
-        if not guild: await interaction.followup.send("Target server not found by bot.", ephemeral=True); return
+        await interaction.response.defer(ephemeral=True)
+        guild = self.bot.get_guild(self.bot.target_guild_id)
+        if not guild:
+            await interaction.followup.send("Target server not found by bot.", ephemeral=True)
+            return
         current_guild_settings = database.get_guild_settings(self.bot.target_guild_id)
-        if not current_guild_settings: await interaction.followup.send("Settings not configured.", ephemeral=True); return
+        if not current_guild_settings:
+            await interaction.followup.send("Settings not configured.", ephemeral=True)
+            return
         delete_delay_val_days = current_guild_settings.get('delete_delay_days', DEFAULT_DELETE_DELAY_DAYS)
         exempted_thread_ids = database.get_exempted_thread_ids_for_guild(self.bot.target_guild_id)
         channels_to_scan = await self._get_channels_to_scan(guild)
-        if not channels_to_scan: await interaction.followup.send("No channels to scan.", ephemeral=True); return
+        if not channels_to_scan:
+            await interaction.followup.send("No channels to scan.", ephemeral=True)
+            return
 
-        pending_deletion_threads: List[Dict] = []; errors_encountered: List[str] = []; processed_thread_ids_for_view = set()
+        closed_threads: List[Dict] = []
+        errors_encountered: List[str] = []
+        processed_thread_ids_for_view = set()
+        now = datetime.now(timezone.utc)
         for channel_obj in channels_to_scan:
             try:
                 iterators_to_check = []
-                if isinstance(channel_obj, TextChannel): 
+                if isinstance(channel_obj, TextChannel):
                     iterators_to_check.append(channel_obj.archived_threads(private=False, limit=None))
                     iterators_to_check.append(channel_obj.archived_threads(private=True, joined=True, limit=None))
-                elif isinstance(channel_obj, ForumChannel): iterators_to_check.append(channel_obj.archived_threads(limit=None))
+                elif isinstance(channel_obj, ForumChannel):
+                    iterators_to_check.append(channel_obj.archived_threads(limit=None))
                 for iterator in filter(None, iterators_to_check):
                     async for thread_item in iterator:
-                        if thread_item.id in processed_thread_ids_for_view: continue
-                        result = await self.process_archived_thread(thread_item, self.bot.target_guild_id, delete_delay_val_days, current_guild_settings, exempted_thread_ids, is_dry_run=True, check_closed_phrase_only=False)
-                        if result and "error" not in result: pending_deletion_threads.append(result)
-                        elif result and "error" in result: errors_encountered.append(f"T#{thread_item.id}: {result['error']}")
+                        if thread_item.id in processed_thread_ids_for_view:
+                            continue
+                        result = await self.process_archived_thread(
+                            thread_item,
+                            self.bot.target_guild_id,
+                            delete_delay_val_days,
+                            current_guild_settings,
+                            exempted_thread_ids,
+                            is_dry_run=True,
+                            check_closed_phrase_only=False
+                        )
+                        if result and "status" in result and result["status"] == "Archived (Closed)":
+                            closed_threads.append(result)
+                        elif result and "error" in result:
+                            errors_encountered.append(f"T#{thread_item.id}: {result['error']}")
                         processed_thread_ids_for_view.add(thread_item.id)
-            except nextcord.Forbidden: errors_encountered.append(f"NoPerms: {channel_obj.mention}")
-            except Exception as e: errors_encountered.append(f"ErrScan: {channel_obj.mention}: {str(e)[:50]}"); logging.error(f"[VIEW_PENDING] Error scanning {type(channel_obj).__name__} {channel_obj.name}: {e}", exc_info=True)
-        
-        if not pending_deletion_threads and not errors_encountered:
-            await interaction.followup.send("No threads are currently scheduled for deletion (or they are exempted).", ephemeral=True); return
-        embed = nextcord.Embed(title="Threads Scheduled for Deletion", description=f"Non-exempted threads marked closed & past {delete_delay_val_days}-day delay.", color=nextcord.Color.orange())
-        if pending_deletion_threads:
-            output_str = ""; field_count = 0
-            for i, thread_info in enumerate(pending_deletion_threads):
-                closed_ts = int(thread_info['closed_at'].timestamp()); due_ts = int(thread_info['delete_due_at'].timestamp())
-                line = f"- **{thread_info.get('name', 'N/A')}** (ID: `{thread_info.get('id', 'N/A')}`)\n  In: <#{thread_info.get('channel_id', 'N/A')}> | Closed: <t:{closed_ts}:R> | Due: <t:{due_ts}:R>\n"
-                if len(output_str) + len(line) > 1020 and i > 0: field_count += 1; embed.add_field(name=f"Pending (Part {field_count})", value=output_str, inline=False); output_str = ""
-                output_str += line
-            if output_str: field_count += 1; embed.add_field(name=f"Pending (Part {field_count})", value=output_str, inline=False)
-        else: embed.add_field(name="Pending Threads", value="None meeting criteria (or all eligible are exempted).", inline=False)
+            except nextcord.Forbidden:
+                errors_encountered.append(f"NoPerms: {channel_obj.mention}")
+            except Exception as e:
+                errors_encountered.append(f"ErrScan: {channel_obj.mention}: {str(e)[:50]}")
+                logging.error(f"[VIEW_PENDING] Error scanning {type(channel_obj).__name__} {channel_obj.name}: {e}", exc_info=True)
+
+        if not closed_threads and not errors_encountered:
+            await interaction.followup.send("No closed threads are currently scheduled for deletion (or they are exempted).", ephemeral=True)
+            return
+
+        embed = nextcord.Embed(
+            title="Threads Scheduled for Deletion",
+            description=f"All non-exempted threads marked closed and scheduled for deletion after {delete_delay_val_days}-day delay.",
+            color=nextcord.Color.orange()
+        )
+
+        if closed_threads:
+            overdue_lines = ""
+            pending_lines = ""
+            for thread_info in closed_threads:
+                closed_ts = int(thread_info['closed_at'].timestamp())
+                due_ts = int(thread_info['delete_due_at'].timestamp())
+                line = f"- **{thread_info.get('name', 'N/A')}** (ID: `{thread_info.get('id', 'N/A')}`)\n  In: <#{thread_info.get('channel_id', 'N/A')}> | Closed: <t:{closed_ts}:R> | Due: <t:{due_ts}:R>"
+                if now > thread_info['delete_due_at']:
+                    overdue_lines += line + "\n"
+                else:
+                    pending_lines += line + "\n"
+            if overdue_lines:
+                embed.add_field(name="Overdue for Deletion", value=overdue_lines[:1020], inline=False)
+            if pending_lines:
+                embed.add_field(name="Pending Deletion", value=pending_lines[:1020], inline=False)
+        else:
+            embed.add_field(name="Pending Threads", value="None meeting criteria (or all eligible are exempted).", inline=False)
+
         if errors_encountered:
-            error_output = "\n".join(errors_encountered); 
-            embed.add_field(name="⚠️ Errors During Scan", value=f"```{error_output[:1020]}```", inline=False); embed.color = nextcord.Color.red()
+            error_output = "\n".join(errors_encountered)
+            embed.add_field(name="⚠️ Errors During Scan", value=f"```{error_output[:1020]}```", inline=False)
+            embed.color = nextcord.Color.red()
         embed.set_footer(text="This is a preview. Deletion by periodic scan.")
         try:
-            if not embed.fields and (not pending_deletion_threads and not errors_encountered): embed.description = "No threads found and no scan issues."
-            elif not embed.fields and not pending_deletion_threads and errors_encountered: embed.description = "No threads found. See scan issues below."
-            elif not embed.fields and pending_deletion_threads: embed.add_field(name="Pending Threads", value="Error formatting threads.", inline=False)
-            if len(embed) > 5900: await interaction.followup.send(f"Found {len(pending_deletion_threads)} threads. List too long. Errors: {len(errors_encountered)}", ephemeral=True)
-            else: await interaction.followup.send(embed=embed, ephemeral=True)
-        except nextcord.HTTPException as e: await interaction.followup.send(f"Found {len(pending_deletion_threads)} threads, but list too long. Errors: {len(errors_encountered)}", ephemeral=True); logging.error(f"Error sending /view_pending_deletions embed: {e}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except nextcord.HTTPException as e:
+            await interaction.followup.send(f"Found {len(closed_threads)} threads, but list too long. Errors: {len(errors_encountered)}", ephemeral=True)
+            logging.error(f"Error sending /view_pending_deletions embed: {e}")
 
     def _humanize_timedelta(self, delta: timedelta) -> str:
         if delta.total_seconds() <= 0: return "now or overdue"
