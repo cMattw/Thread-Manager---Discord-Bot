@@ -207,10 +207,20 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
             database.set_thread_data(thread.id, "status", "Archived (Closed)")
             database.set_thread_data(thread.id, "closed_at", timestamp_of_phrase.isoformat())
             database.set_thread_data(thread.id, "delete_due_at", delete_after_timestamp.isoformat())
-            # If deletion date passed, delete
+            # Always return info for closed threads, so they can be scheduled for deletion
+            if is_dry_run:
+                return {
+                    "id": thread.id,
+                    "name": thread.name,
+                    "parent_name": thread.parent.name if thread.parent else "Unknown",
+                    "parent_id": thread.parent_id,
+                    "status": "Archived (Closed)",
+                    "closed_at": timestamp_of_phrase,
+                    "delete_due_at": delete_after_timestamp,
+                    "channel_id": thread.parent_id,
+                    "channel_name": thread.parent.name if thread.parent else "Unknown"
+                }
             if datetime.now(timezone.utc) > delete_after_timestamp:
-                if is_dry_run:
-                    return {"name": thread.name, "id": thread.id, "closed_at": timestamp_of_phrase, "delete_due_at": delete_after_timestamp, "channel_id": thread.parent_id, "channel_name": thread.parent.name if thread.parent else "Unknown", "status": "Archived (Closed)"}
                 try:
                     logging.info(f"Deleting thread {thread.name} ({thread.id}) as it was closed and {delete_delay_config_days} day(s) delay period passed.")
                     await thread.delete()
@@ -224,17 +234,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                     logging.error(f"HTTP error deleting thread {thread.name} ({thread.id}): {e}")
                     if guild_settings.get('log_channel_id'):
                         await self._log_action(guild_id, "Thread Deletion FAILED", thread_obj=thread, details="Discord API error.", error_details_text=str(e), color=Color.red())
-            else:
-                # Always return info for closed threads, so they can be scheduled for deletion
-                return {
-                    "id": thread.id,
-                    "name": thread.name,
-                    "parent_name": thread.parent.name if thread.parent else "Unknown",
-                    "parent_id": thread.parent_id,
-                    "status": "Archived (Closed)",
-                    "closed_at": timestamp_of_phrase,
-                    "delete_due_at": delete_after_timestamp
-                }
         elif is_dry_run and check_closed_phrase_only:
             # In dry run, if not closed, mark as inactive
             return {
