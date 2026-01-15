@@ -763,7 +763,6 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                         result = None
                         if status and closed_at_str and delete_due_at_str:
                             try:
-                                from datetime import datetime
                                 closed_at = datetime.fromisoformat(closed_at_str)
                                 delete_due_at = datetime.fromisoformat(delete_due_at_str)
                                 result = {
