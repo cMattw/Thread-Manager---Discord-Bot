@@ -913,72 +913,58 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 break
     
     async def _has_closed_phrase(self, message: nextcord.Message) -> bool:
-        """Check if message contains closed phrase in content, embeds, or V2 components"""
-        # Check message content
-        if message.content and CLOSED_PHRASE.lower() in message.content.lower():
+        phrase_lower = CLOSED_PHRASE.lower()
+
+        # 1. Check Content
+        if message.content and phrase_lower in message.content.lower():
             return True
 
-        # Check all embeds thoroughly
+        # 2. Check Embeds (Explicitly check visible fields)
         for embed in message.embeds:
-            embed_str = str(embed.to_dict()).lower()
-            if CLOSED_PHRASE.lower() in embed_str:
-                return True
+            # Check standard fields
+            if embed.title and phrase_lower in embed.title.lower(): return True
+            if embed.description and phrase_lower in embed.description.lower(): return True
+            if embed.footer and embed.footer.text and phrase_lower in embed.footer.text.lower(): return True
+            if embed.author and embed.author.name and phrase_lower in embed.author.name.lower(): return True
+            
+            # Check fields
+            for field in embed.fields:
+                if (field.name and phrase_lower in field.name.lower()) or \
+                   (field.value and phrase_lower in field.value.lower()):
+                    return True
 
-        # Check Components V2 (Text Display, Section, Container, etc.)
-        def search_components(components):
-            if not components:
-                return False
-            for comp in components:
-                # Convert to dict if it's a nextcord.Component or similar object, but skip base Component
-                if not isinstance(comp, dict):
-                    # Only call to_dict if implemented and not base Component
-                    to_dict = getattr(comp, 'to_dict', None)
-                    # Defensive: skip if to_dict is not callable or is base class (raises NotImplementedError)
-                    if callable(to_dict) and type(comp).__name__ != "Component":
-                        try:
-                            comp = to_dict()
-                        except NotImplementedError:
-                            continue  # skip base Component or broken to_dict
-                    else:
-                        continue  # skip if not dict-like
-                comp_type = comp.get('type')
-                # Text Display (type 10)
-                if comp_type == 10 and 'content' in comp:
-                    if CLOSED_PHRASE.lower() in comp['content'].lower():
-                        return True
-                # Section (type 9), Container (type 17), Action Row (type 1), etc. can have children
-                for key in ('components', 'accessory', 'component'):
-                    child = comp.get(key)
-                    if isinstance(child, list):
-                        if search_components(child):
-                            return True
-                    elif isinstance(child, dict) or (hasattr(child, 'to_dict')):
-                        # Convert to dict if needed, skip base Component
-                        if not isinstance(child, dict) and hasattr(child, 'to_dict') and type(child).__name__ != "Component":
-                            try:
-                                child = child.to_dict()
-                            except NotImplementedError:
-                                continue
-                        if search_components([child]):
-                            return True
+        # 3. Check Components (Deep Search)
+        # This handles Button Labels, Select Menu Placeholders, and custom "V2" Component text.
+        
+        components_data = []
+        
+        # Priority 1: content within 'raw_data' (contains the exact API response including new/unsupported types)
+        if hasattr(message, 'raw_data') and 'components' in message.raw_data:
+            components_data = message.raw_data['components']
+        # Priority 2: Hydrated components from nextcord (if raw_data isn't available)
+        elif message.components:
+            try:
+                components_data = [c.to_dict() for c in message.components]
+            except Exception:
+                # Fallback if to_dict fails on weird components
+                pass
+
+        if not components_data:
             return False
 
-        # nextcord.Message does not expose components directly, so use .raw_data if available
-        raw_data = getattr(message, 'raw_data', None)
-        if raw_data and 'components' in raw_data:
-            if search_components(raw_data['components']):
-                return True
-        # Some libraries may expose message.components directly as a list of dicts
-        if hasattr(message, 'components') and isinstance(message.components, list):
-            # Try to convert to dict if not already
-            try:
-                comp_dicts = [c.to_dict() if hasattr(c, 'to_dict') else c for c in message.components]
-            except Exception:
-                comp_dicts = message.components
-            if search_components(comp_dicts):
-                return True
+        # Recursive helper to find string in any JSON structure (list/dict)
+        def contains_phrase_recursive(data):
+            if isinstance(data, str):
+                return phrase_lower in data.lower()
+            elif isinstance(data, list):
+                return any(contains_phrase_recursive(item) for item in data)
+            elif isinstance(data, dict):
+                # We iterate over values. We can ignore keys (like 'custom_id') usually, 
+                # but searching all values is safest for "V2" types.
+                return any(contains_phrase_recursive(value) for value in data.values())
+            return False
 
-        return False
+        return contains_phrase_recursive(components_data)
     
 def setup(bot: commands.Bot):
     bot.add_cog(TicketManagerCog(bot))
