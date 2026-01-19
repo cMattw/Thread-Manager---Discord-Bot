@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Union, Set
 import re 
 
 # Constants
-CLOSED_PHRASE = "This ticket has been closed"
+CLOSED_PHRASE = "This ticket has been closed."
 DEFAULT_SCAN_INTERVAL_MINUTES = 60
 DEFAULT_DELETE_DELAY_DAYS = 7 
 MANILA_TZ = pytz.timezone("Asia/Manila")
@@ -913,58 +913,45 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 break
     
     async def _has_closed_phrase(self, message: nextcord.Message) -> bool:
-        phrase_lower = CLOSED_PHRASE.lower()
+        phrase = CLOSED_PHRASE.lower()
 
-        # 1. Check Content
-        if message.content and phrase_lower in message.content.lower():
+        # 1. Check standard content
+        if message.content and phrase in message.content.lower():
             return True
 
-        # 2. Check Embeds (Explicitly check visible fields)
+        # 2. Check Embeds
         for embed in message.embeds:
-            # Check standard fields
-            if embed.title and phrase_lower in embed.title.lower(): return True
-            if embed.description and phrase_lower in embed.description.lower(): return True
-            if embed.footer and embed.footer.text and phrase_lower in embed.footer.text.lower(): return True
-            if embed.author and embed.author.name and phrase_lower in embed.author.name.lower(): return True
-            
-            # Check fields
-            for field in embed.fields:
-                if (field.name and phrase_lower in field.name.lower()) or \
-                   (field.value and phrase_lower in field.value.lower()):
-                    return True
+            # We convert the whole embed object to a string for a deep search
+            # This covers title, description, fields, footer, author, etc.
+            if phrase in str(embed.to_dict()).lower():
+                return True
 
-        # 3. Check Components (Deep Search)
-        # This handles Button Labels, Select Menu Placeholders, and custom "V2" Component text.
+        # 3. Check Components (The "Nuclear" Option)
+        # We grab the raw component data and convert it entirely to a string.
+        # This ensures we find the text whether it is in 'label', 'content', 'placeholder', or 'value'.
         
         components_data = []
         
-        # Priority 1: content within 'raw_data' (contains the exact API response including new/unsupported types)
+        # Try to get raw data first (contains exact API response)
         if hasattr(message, 'raw_data') and 'components' in message.raw_data:
             components_data = message.raw_data['components']
-        # Priority 2: Hydrated components from nextcord (if raw_data isn't available)
+        # Fallback to hydration if raw_data is missing
         elif message.components:
             try:
-                components_data = [c.to_dict() for c in message.components]
+                # Convert nextcord component objects to dictionaries
+                components_data = [
+                    c.to_dict() if hasattr(c, 'to_dict') else str(c) 
+                    for c in message.components
+                ]
             except Exception:
-                # Fallback if to_dict fails on weird components
                 pass
 
-        if not components_data:
-            return False
+        # Convert the entire component list to a string and search
+        # This finds "This ticket has been closed" even if it's hidden inside a nested 'label'
+        if components_data and phrase in str(components_data).lower():
+            return True
 
-        # Recursive helper to find string in any JSON structure (list/dict)
-        def contains_phrase_recursive(data):
-            if isinstance(data, str):
-                return phrase_lower in data.lower()
-            elif isinstance(data, list):
-                return any(contains_phrase_recursive(item) for item in data)
-            elif isinstance(data, dict):
-                # We iterate over values. We can ignore keys (like 'custom_id') usually, 
-                # but searching all values is safest for "V2" types.
-                return any(contains_phrase_recursive(value) for value in data.values())
-            return False
-
-        return contains_phrase_recursive(components_data)
+        return False
     
 def setup(bot: commands.Bot):
     bot.add_cog(TicketManagerCog(bot))
