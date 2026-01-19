@@ -135,7 +135,7 @@ class SuggestionView(ui.View):
 
         if user_selectable_tags:
             tag_options = [nextcord.SelectOption(label=tag.name, value=str(tag.id)) for tag in user_selectable_tags]
-            max_selectable = min(len(tag_options), 5)
+            max_selectable = min(len(tag_options), 4)
             tag_select = ui.Select(placeholder="Select relevant tags", options=tag_options, min_values=0, max_values=max_selectable, custom_id="suggestion_tag_select")
             tag_select.callback = self.on_tag_select
             self.add_item(tag_select)
@@ -222,7 +222,7 @@ class SuggestionView(ui.View):
             tags_to_apply = list(self.selected_tags) if self.selected_tags else []
             if pending_tag_id:
                 pending_tag = forum_channel.get_tag(int(pending_tag_id))
-                if pending_tag and pending_tag not in tags_to_apply:
+                if pending_tag and pending_tag not in tags_to_apply and len(tags_to_apply) < 5:
                     tags_to_apply.append(pending_tag)
             if tags_to_apply:
                 await new_thread.edit(applied_tags=tags_to_apply)
