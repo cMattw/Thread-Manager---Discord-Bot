@@ -913,43 +913,46 @@ class TicketManagerCog(commands.Cog, name="Ticket Lifecycle Manager"):
                 break
     
     async def _has_closed_phrase(self, message: nextcord.Message) -> bool:
+        """
+        Robust check that includes a Raw API fallback to catch "V2" components 
+        that nextcord might fail to parse/store in the message object.
+        """
         phrase = CLOSED_PHRASE.lower()
 
-        # 1. Check standard content
+        # 1. Standard Checks (Fast)
+        # Check content
         if message.content and phrase in message.content.lower():
             return True
 
-        # 2. Check Embeds
+        # Check Embeds (Deep string search of the embed dict)
         for embed in message.embeds:
-            # We convert the whole embed object to a string for a deep search
-            # This covers title, description, fields, footer, author, etc.
             if phrase in str(embed.to_dict()).lower():
                 return True
 
-        # 3. Check Components (The "Nuclear" Option)
-        # We grab the raw component data and convert it entirely to a string.
-        # This ensures we find the text whether it is in 'label', 'content', 'placeholder', or 'value'.
-        
-        components_data = []
-        
-        # Try to get raw data first (contains exact API response)
-        if hasattr(message, 'raw_data') and 'components' in message.raw_data:
-            components_data = message.raw_data['components']
-        # Fallback to hydration if raw_data is missing
-        elif message.components:
+        # Check loaded Components (if nextcord successfully parsed them)
+        if message.components:
             try:
-                # Convert nextcord component objects to dictionaries
-                components_data = [
-                    c.to_dict() if hasattr(c, 'to_dict') else str(c) 
-                    for c in message.components
-                ]
+                # Convert components to string representation
+                comp_str = str([c.to_dict() for c in message.components]).lower()
+                if phrase in comp_str:
+                    return True
             except Exception:
                 pass
 
-        # Convert the entire component list to a string and search
-        # This finds "This ticket has been closed" even if it's hidden inside a nested 'label'
-        if components_data and phrase in str(components_data).lower():
-            return True
+        # 2. Raw API Fallback (The Fix for "Invisible" Components)
+        # If the sender is a bot, the text might be in a component nextcord dropped.
+        # We fetch the raw JSON directly from Discord API to be 100% sure.
+        if message.author.bot:
+            try:
+                # This bypasses the library's cache/parsing and gets the raw JSON payload
+                raw_data = await self.bot.http.get_message(message.channel.id, message.id)
+                
+                # Convert the entire raw JSON to string and search
+                # This catches ANY text in ANY field (label, placeholder, custom_id, etc.)
+                if phrase in str(raw_data).lower():
+                    return True
+            except Exception as e:
+                logging.warning(f"Failed to fetch raw message data for scan: {e}")
 
         return False
     
