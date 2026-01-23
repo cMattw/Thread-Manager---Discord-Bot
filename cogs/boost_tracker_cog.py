@@ -382,6 +382,69 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             db.add_claimed_keys(str(user.id), amount)  # amount is negative
             await interaction.send(f"Deducted {abs(amount)} key(s) from {user.display_name}.", ephemeral=True)
 
+    @booster_group.subcommand(name="test_anniversary", description="Manually trigger anniversary check for a user (Testing).")
+    @application_checks.has_permissions(manage_guild=True)
+    async def test_anniversary(self, interaction: Interaction, user: Member = SlashOption(description="User to check.")):
+        await interaction.response.defer(ephemeral=True)
+        
+        # 1. Fetch booster data from DB
+        booster_data = db.get_booster(str(user.id))
+        if not booster_data or not booster_data.get('is_currently_boosting'):
+            return await interaction.send(f"{user.display_name} is not currently recorded as a booster.", ephemeral=True)
+
+        # 2. Calculate months boosted based on the stored timestamp
+        start_ts = booster_data.get('current_boost_start_timestamp')
+        if not start_ts:
+            return await interaction.send("No boost start timestamp found in database.", ephemeral=True)
+
+        now = datetime.now(timezone.utc)
+        boost_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+        
+        # Calculate month difference
+        months_boosted = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
+        if now.day < boost_start.day:
+            months_boosted -= 1
+
+        if months_boosted < 1:
+            return await interaction.send(f"{user.display_name} has only been boosting for less than a month ({months_boosted} months).", ephemeral=True)
+
+        # 3. Retrieve configuration
+        config = db.get_config(str(interaction.guild.id))
+        template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
+        month_label = "month" if months_boosted == 1 else "months"
+        
+        content = template.format(
+            mention=user.mention,
+            user=user.name,
+            server=interaction.guild.name,
+            months=months_boosted,
+            month_label=month_label
+        )
+
+        # 4. Attempt to send via Webhook or Channel
+        webhook_url = config.get("booster_announcement_webhook_url")
+        success = False
+        
+        if webhook_url:
+            async with aiohttp.ClientSession() as session:
+                try:
+                    webhook = Webhook.from_url(webhook_url, session=session)
+                    await webhook.send(content)
+                    success = True
+                except Exception as e:
+                    logger.error(f"Test Anniversary: Webhook failed: {e}")
+        else:
+            channel_id = config.get("announcement_channel_id")
+            if channel_id and (channel := self.bot.get_channel(int(channel_id))):
+                await channel.send(content)
+                success = True
+
+        if success:
+            # We do NOT update the DB here so you can test it multiple times
+            await interaction.send(f"Success! Sent {months_boosted}-month anniversary message for {user.display_name}.", ephemeral=True)
+        else:
+            await interaction.send("Failed to send message. Check if a channel or webhook is configured.", ephemeral=True)
+
     # --- CONFIG GROUP ---
     
     @booster_group.subcommand(name="config", description="Configuration commands for the booster tracker.")
