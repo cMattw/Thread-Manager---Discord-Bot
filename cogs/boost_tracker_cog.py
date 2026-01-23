@@ -484,15 +484,15 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
     @config_group.subcommand(name="set_key_rate", description="Set how many keys a user gets per month of boosting.")
     @application_checks.has_permissions(manage_guild=True)
     async def set_key_rate(self, interaction: Interaction, amount: int = SlashOption(description="Amount of keys per month", min_value=0)):
-        # Update the config in the DB
+        # The table 'cog_config' uses 'config_id' to store the Guild ID
         with db.get_db_connection() as conn:
             conn.cursor().execute(
-                "UPDATE cog_config SET keys_per_month = ? WHERE guild_id = ?",
+                "UPDATE cog_config SET keys_per_month = ? WHERE config_id = ?",
                 (amount, str(interaction.guild.id))
             )
             conn.commit()
-    
-        await interaction.send(f"✅ Key exchange rate updated. Boosters will now receive **{amount}** keys per month.", ephemeral=True)
+        
+        await interaction.send(f"✅ Key exchange rate updated to **{amount}** keys per month.", ephemeral=True)
 
     @config_group.subcommand(name="channel", description="Sets the channel for all boost-related announcements.")
     @application_checks.has_permissions(manage_guild=True)
