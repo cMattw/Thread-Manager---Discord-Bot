@@ -446,6 +446,31 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
         else:
             await interaction.send("Failed to send message. Check if a channel or webhook is configured.", ephemeral=True)
 
+    @booster_group.subcommand(name="sync_counts", description="Syncs boost counts based on months boosted.")
+    @application_checks.has_permissions(manage_guild=True)
+    async def sync_counts(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        active_boosters = [b for b in db.get_all_boosters_for_leaderboard() if b.get('is_currently_boosting')]
+        updated_count = 0
+        now = datetime.now(timezone.utc)
+
+        for booster in active_boosters:
+            start_ts = booster.get('current_boost_start_timestamp')
+            if not start_ts: continue
+
+            boost_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+            months_boosted = (now.year - boost_start.year) * 12 + (now.month - boost_start.month)
+            if now.day < boost_start.day: months_boosted -= 1
+
+            # Only update if the calculated months are higher than recorded count
+            if months_boosted > booster.get('total_boost_count', 0):
+                # Calculate how many counts they are missing
+                diff = months_boosted - booster.get('total_boost_count', 0)
+                db.increment_boost_count(booster['user_id'], diff)
+                updated_count += 1
+
+        await interaction.send(f"Synced counts for {updated_count} boosters based on their duration.", ephemeral=True)
+        
     # --- CONFIG GROUP ---
     
     @booster_group.subcommand(name="config", description="Configuration commands for the booster tracker.")
