@@ -106,6 +106,8 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             config = db.get_config(str(message.guild.id))
             webhook_url = config.get("booster_announcement_webhook_url")
             template = config.get("welcome_message_template", "Thank you {mention} for boosting {server}! 🚀")
+            rate = config.get("keys_per_month", 1) # Default to 1 if not set
+            db.add_claimed_keys(str(message.author.id), rate)
 
             content = template.format(
                 mention=booster.mention,
@@ -207,6 +209,8 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             # Check if we need to send anniversary message
             last_notified = booster_data.get('last_anniversary_notified', 0)
             if months_boosted > last_notified:
+                rate = config.get("keys_per_month", 1)
+                db.add_claimed_keys(user_id, rate)
                 db.increment_boost_count(user_id, 1)
                 # Send anniversary message
                 template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
@@ -476,6 +480,19 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
     @booster_group.subcommand(name="config", description="Configuration commands for the booster tracker.")
     async def config_group(self, interaction: Interaction):
         pass
+
+    @config_group.subcommand(name="set_key_rate", description="Set how many keys a user gets per month of boosting.")
+    @application_checks.has_permissions(manage_guild=True)
+    async def set_key_rate(self, interaction: Interaction, amount: int = SlashOption(description="Amount of keys per month", min_value=0)):
+        # Update the config in the DB
+        with db.get_db_connection() as conn:
+            conn.cursor().execute(
+                "UPDATE cog_config SET keys_per_month = ? WHERE guild_id = ?",
+                (amount, str(interaction.guild.id))
+            )
+            conn.commit()
+    
+        await interaction.send(f"✅ Key exchange rate updated. Boosters will now receive **{amount}** keys per month.", ephemeral=True)
 
     @config_group.subcommand(name="channel", description="Sets the channel for all boost-related announcements.")
     @application_checks.has_permissions(manage_guild=True)

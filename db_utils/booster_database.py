@@ -77,6 +77,10 @@ def initialize_database():
                 raise
         conn.commit()
         logging.info("Booster tracker database initialized/verified.")
+        try:
+            cursor.execute("ALTER TABLE cog_config ADD COLUMN keys_per_month INTEGER DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass # Column already exists
 
 def get_booster(user_id: str) -> Optional[Dict[str, Any]]:
     """Retrieves a specific booster's data."""
