@@ -207,6 +207,7 @@ class BoostTrackerCog(commands.Cog, name="Boost Tracker"):
             # Check if we need to send anniversary message
             last_notified = booster_data.get('last_anniversary_notified', 0)
             if months_boosted > last_notified:
+                db.increment_boost_count(user_id, 1)
                 # Send anniversary message
                 template = config.get("anniversary_message_template", "{mention} has been boosting for {months} {month_label}!")
                 month_label = "month" if months_boosted == 1 else "months"
