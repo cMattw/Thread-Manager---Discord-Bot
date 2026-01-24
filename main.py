@@ -64,7 +64,7 @@ INITIAL_EXTENSIONS = [
     'cogs.auto_responder_cog',
     'cogs.role_monitor_cog',
     'cogs.leveling_leaderboard_cog',
-    'cogs.rainbow_role_cog',
+    #'cogs.rainbow_role_cog',
     'cogs.suggestions_cog',
     'cogs.boost_tracker_cog',
     'cogs.trade_manager_cog',
