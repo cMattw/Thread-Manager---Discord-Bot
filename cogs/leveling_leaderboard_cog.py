@@ -230,7 +230,8 @@ class LevelingLeaderboardCog(commands.Cog, name="LevelingLeaderboard"):
                 try: in_lu_channel = (message.channel.id == int(lu_channel_id_str))
                 except ValueError: logger.warning(f"Invalid levelup_channel_id in DB: {lu_channel_id_str}")
 
-            if in_lu_channel:
+            process_level_up = not lu_channel_id_str or in_lu_channel
+            if process_level_up:
                 is_lu_title = embed.title and "leveled up!" in embed.title.lower()
                 has_lu_desc_info = False
                 if embed.description:
