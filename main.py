@@ -72,6 +72,7 @@ INITIAL_EXTENSIONS = [
     'cogs.store_manager_cog',
     #'cogs.activity_checker_cog',
     'cogs.auto_reaction_cog',
+    'cogs.counting_cog',
 ]
 
 @bot.event

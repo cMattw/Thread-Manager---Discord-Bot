@@ -54,7 +54,8 @@ def initialize_database(): # Initializes tables in the main database
             scan_interval_minutes INTEGER DEFAULT 60,
             delete_delay_days INTEGER DEFAULT 7,
             log_channel_id INTEGER,           -- For TicketManagerCog & other general logs
-            announcement_log_channel_id INTEGER -- For AnnouncementCog
+            announcement_log_channel_id INTEGER, -- For AnnouncementCog
+            counting_channel_id INTEGER        -- For CountingCog
         )
     ''')
     # Attempt to add announcement_log_channel_id if it doesn't exist
@@ -66,6 +67,16 @@ def initialize_database(): # Initializes tables in the main database
             cursor.execute("ALTER TABLE settings ADD COLUMN announcement_log_channel_id INTEGER DEFAULT NULL")
         except sqlite3.OperationalError as e:
             logging.warning(f"Could not add 'announcement_log_channel_id' column: {e}")
+
+    # Attempt to add counting_channel_id if it doesn't exist
+    try:
+        cursor.execute("SELECT counting_channel_id FROM settings LIMIT 1")
+    except sqlite3.OperationalError:
+        logging.info("Adding 'counting_channel_id' column to settings table.")
+        try:
+            cursor.execute("ALTER TABLE settings ADD COLUMN counting_channel_id INTEGER DEFAULT NULL")
+        except sqlite3.OperationalError as e:
+            logging.warning(f"Could not add 'counting_channel_id' column: {e}")
 
     # 2. Monitored channels for thread manager
     cursor.execute('''
