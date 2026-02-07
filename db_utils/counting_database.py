@@ -55,3 +55,50 @@ def set_counting_channel(guild_id: int, channel_id: int) -> bool:
         return False
     finally:
         conn.close()
+
+def add_exempted_role(guild_id: int, role_id: int) -> bool:
+    """Add an exempted role for the counting channel."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT OR IGNORE INTO settings (guild_id) VALUES (?)", (guild_id,))
+        cursor.execute("INSERT INTO counting_exempted_roles (guild_id, role_id) VALUES (?, ?)", (guild_id, role_id))
+        conn.commit()
+        logging.info(f"Added exempted role {role_id} for guild {guild_id}")
+        return True
+    except sqlite3.IntegrityError:
+        logging.warning(f"Role {role_id} already exempted for guild {guild_id}")
+        return False
+    except sqlite3.Error as e:
+        logging.error(f"DB Error adding exempted_role for {guild_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def remove_exempted_role(guild_id: int, role_id: int) -> bool:
+    """Remove an exempted role for the counting channel."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM counting_exempted_roles WHERE guild_id = ? AND role_id = ?", (guild_id, role_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        logging.error(f"DB Error removing exempted_role for {guild_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_exempted_roles(guild_id: int) -> list:
+    """Get all exempted roles for a guild."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    roles = []
+    try:
+        cursor.execute("SELECT role_id FROM counting_exempted_roles WHERE guild_id = ?", (guild_id,))
+        roles = [row['role_id'] for row in cursor.fetchall()]
+    except sqlite3.Error as e:
+        logging.error(f"DB Error getting exempted_roles for {guild_id}: {e}")
+    finally:
+        conn.close()
+    return roles

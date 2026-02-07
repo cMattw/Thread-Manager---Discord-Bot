@@ -90,6 +90,13 @@ def initialize_database(): # Initializes tables in the main database
         CREATE TABLE IF NOT EXISTS exempted_threads (
             thread_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL, exempted_by_user_id INTEGER, exemption_timestamp TEXT )
     ''')
+    # 3.5. Counting exempted roles
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS counting_exempted_roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, role_id INTEGER NOT NULL,
+            UNIQUE (guild_id, role_id),
+            FOREIGN KEY (guild_id) REFERENCES settings(guild_id) ON DELETE CASCADE ON UPDATE CASCADE )
+    ''')
     # 4. Status Monitor Cog Settings (server_tag_role_id removed)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS status_monitor_settings (

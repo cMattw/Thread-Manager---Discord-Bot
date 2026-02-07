@@ -2,7 +2,13 @@ import nextcord
 from nextcord.ext import commands
 import logging
 import re
-from db_utils.counting_database import get_counting_channel, set_counting_channel
+from db_utils.counting_database import (
+    get_counting_channel,
+    set_counting_channel,
+    add_exempted_role,
+    remove_exempted_role,
+    get_exempted_roles,
+)
 
 
 class CountingCog(commands.Cog):
@@ -44,6 +50,48 @@ class CountingCog(commands.Cog):
         else:
             await interaction.response.send_message("❌ Failed to set counting channel.", ephemeral=True)
 
+    @counting.subcommand(
+        name="add_exempted_role",
+        description="Add a role that is exempt from counting channel rules"
+    )
+    async def add_exempted_role_cmd(
+        self,
+        interaction: nextcord.Interaction,
+        role: nextcord.Role
+    ):
+        """Add a role that will be exempt from message deletion."""
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You need 'Manage Server' permission to use this command.", ephemeral=True)
+            return
+
+        success = add_exempted_role(interaction.guild_id, role.id)
+
+        if success:
+            await interaction.response.send_message(f"✅ Role {role.mention} is now exempt from counting rules")
+        else:
+            await interaction.response.send_message(f"⚠️ Role {role.mention} was already exempt.", ephemeral=True)
+
+    @counting.subcommand(
+        name="remove_exempted_role",
+        description="Remove a role from the exemption list"
+    )
+    async def remove_exempted_role_cmd(
+        self,
+        interaction: nextcord.Interaction,
+        role: nextcord.Role
+    ):
+        """Remove a role from the exemption list."""
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("❌ You need 'Manage Server' permission to use this command.", ephemeral=True)
+            return
+
+        success = remove_exempted_role(interaction.guild_id, role.id)
+
+        if success:
+            await interaction.response.send_message(f"✅ Role {role.mention} is no longer exempt")
+        else:
+            await interaction.response.send_message(f"❌ Role {role.mention} was not in the exemption list.", ephemeral=True)
+
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message):
         """Delete messages with non-numerical characters in the counting channel."""
@@ -64,6 +112,13 @@ class CountingCog(commands.Cog):
 
         # If this message is not in the counting channel, do nothing
         if message.channel.id != counting_channel_id:
+            return
+
+        # Check if the user has an exempted role
+        exempted_roles = get_exempted_roles(message.guild.id)
+        user_role_ids = [role.id for role in message.author.roles]
+
+        if any(role_id in exempted_roles for role_id in user_role_ids):
             return
 
         # Check if the message contains only numerical characters (ignore whitespace)
